@@ -27,18 +27,30 @@ public final class VoiceEngine: @unchecked Sendable {
         }
     }
 
-    /// Starts playback, and capture too if `capture` (needs microphone permission).
-    public func start(capture: Bool) throws {
-        guard !running else { return }
+    /// Starts playback, and capture too if `capture` and a microphone is available (needs permission).
+    /// Returns whether capture is running.
+    @discardableResult
+    public func start(capture: Bool) throws -> Bool {
+        guard !running else { return capturing }
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP, .allowAirPlay])
         try session.setPreferredSampleRate(48_000)
         try session.setPreferredIOBufferDuration(0.01)
         try session.setActive(true)
+        let inputAvailable = session.isInputAvailable
+        #else
+        let inputAvailable = engine.inputNode.inputFormat(forBus: 0).channelCount > 0
         #endif
+        capturing = capture && inputAvailable
 
-        let out = engine.outputNode
+        // Voice processing (echo cancellation) has to be switched on before anything is connected: doing it
+        // afterwards makes AVAudioEngine reconnect the graph and raise an Objective-C exception, which Swift
+        // cannot catch. With no input device it must not be touched at all.
+        if capturing {
+            try engine.inputNode.setVoiceProcessingEnabled(true)
+        }
+
         let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
         let source = AVAudioSourceNode(format: playFormat) { [mixer] _, _, frames, buffers in
             let list = UnsafeMutableAudioBufferListPointer(buffers)
@@ -49,25 +61,30 @@ public final class VoiceEngine: @unchecked Sendable {
         }
         engine.attach(source)
         engine.connect(source, to: engine.mainMixerNode, format: playFormat)
-        engine.connect(engine.mainMixerNode, to: out, format: nil)
 
-        if capture {
+        if capturing {
             let input = engine.inputNode
-            try? input.setVoiceProcessingEnabled(true)
             let hw = input.outputFormat(forBus: 0)
-            converter = AVAudioConverter(from: hw, to: captureFormat)
-            input.installTap(onBus: 0, bufferSize: 480, format: hw) { [weak self] buffer, _ in
-                self?.captured(buffer)
+            if hw.channelCount > 0, hw.sampleRate > 0 {
+                converter = AVAudioConverter(from: hw, to: captureFormat)
+                input.installTap(onBus: 0, bufferSize: 480, format: hw) { [weak self] buffer, _ in
+                    self?.captured(buffer)
+                }
+            } else {
+                capturing = false
             }
         }
         engine.prepare()
         try engine.start()
         running = true
+        return capturing
     }
+
+    public private(set) var capturing = false
 
     public func stop() {
         guard running else { return }
-        engine.inputNode.removeTap(onBus: 0)
+        if capturing { engine.inputNode.removeTap(onBus: 0) }
         engine.stop()
         running = false
         #if os(iOS)

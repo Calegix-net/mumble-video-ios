@@ -34,3 +34,8 @@ MACOS_MIN=14.0
 
 # Swift runtime and code generator for the control-channel protobufs (Package.swift pins the same).
 SWIFT_PROTOBUF_VERSION=1.38.1
+
+# Generates MumbleVideo.xcodeproj from project.yml (tools/gen-project.sh). Digest from the GitHub release.
+XCODEGEN_VERSION=2.46.0
+XCODEGEN_URL=https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip
+XCODEGEN_SHA256=4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806

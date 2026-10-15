@@ -1,0 +1,40 @@
+name: MumbleVideo
+options:
+  bundleIdPrefix: com.calegix
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+packages:
+  MumbleKit:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # MumbleNative.xcframework has no arm64 simulator slice yet (tools/build-deps.sh builds Intel only).
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: arm64
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  MumbleVideo:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - package: MumbleKit
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Mumble Video
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIBackgroundModes: [audio]
+        NSMicrophoneUsageDescription: Mumble Video sends your voice to the people in your channel.
+        NSLocalNetworkUsageDescription: Mumble Video connects to voice servers on your network.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.calegix.mumblevideo.link
+            CFBundleURLSchemes: [mumble]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.calegix.mumblevideo.ios
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic

@@ -13,6 +13,15 @@ public struct AudioPacket: Sendable {
     public var opus: Data
     public var isLastFrame: Bool
     public var volumeFactor: Float
+
+    public init(senderSession: UInt32, frameNumber: UInt64, context: UInt32, opus: Data, isLastFrame: Bool, volumeFactor: Float) {
+        self.senderSession = senderSession
+        self.frameNumber = frameNumber
+        self.context = context
+        self.opus = opus
+        self.isLastFrame = isLastFrame
+        self.volumeFactor = volumeFactor
+    }
 }
 
 /// One reassembled, decrypted video unit (a whole VP8/VP9 frame, or one part of an H.264 frame).
@@ -26,6 +35,22 @@ public struct VideoUnit: Sendable {
     public var captureTimestampUsec: UInt64
     public var x, y, width, height: UInt32
     public var payload: Data
+
+    public init(senderSession: UInt32, streamID: UInt32, frameNumber: UInt64, unitID: UInt32, isKeyframe: Bool, isFrameEnd: Bool,
+                captureTimestampUsec: UInt64, x: UInt32, y: UInt32, width: UInt32, height: UInt32, payload: Data) {
+        self.senderSession = senderSession
+        self.streamID = streamID
+        self.frameNumber = frameNumber
+        self.unitID = unitID
+        self.isKeyframe = isKeyframe
+        self.isFrameEnd = isFrameEnd
+        self.captureTimestampUsec = captureTimestampUsec
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.payload = payload
+    }
 }
 
 /// Everything one call into the media session produced. The host must act on every list.

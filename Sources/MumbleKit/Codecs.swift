@@ -62,6 +62,14 @@ public struct I420Frame: Sendable {
     public var y: Data
     public var u: Data
     public var v: Data
+
+    public init(width: Int, height: Int, y: Data, u: Data, v: Data) {
+        self.width = width
+        self.height = height
+        self.y = y
+        self.u = u
+        self.v = v
+    }
 }
 
 /// libvpx VP8/VP9 decoder (VideoToolbox has no VP8, which is what desktop and Android send by default).

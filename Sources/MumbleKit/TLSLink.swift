@@ -75,8 +75,13 @@ final class TLSLink: @unchecked Sendable {
                     onEvent(.untrusted(cert))
                     connection.cancel()
                 } else {
-                    onEvent(.closed(error.localizedDescription))
-                    connection.cancel()
+                    // No usable path yet (radio switching, network coming up): Network.framework retries by
+                    // itself. Give up only if it is still not ready after a while.
+                    queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+                        guard let self, connection.state != .ready, connection.state != .cancelled else { return }
+                        onEvent(.closed(error.localizedDescription))
+                        connection.cancel()
+                    }
                 }
             case .cancelled:
                 break

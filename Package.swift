@@ -9,6 +9,7 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "MumbleKit", targets: ["MumbleKit"]),
+        .executable(name: "mv-test-peer", targets: ["mv-test-peer"]),
     ],
     dependencies: [
         // Keep in step with SWIFT_PROTOBUF_VERSION in tools/versions.sh (the code generator).
@@ -25,6 +26,7 @@ let package = Package(
             name: "MumbleKit",
             dependencies: ["CMumbleBridge", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
+        .executableTarget(name: "mv-test-peer", dependencies: ["MumbleKit"]),
         .testTarget(name: "MumbleKitTests", dependencies: ["MumbleKit"], resources: [.copy("Resources")]),
     ],
     cxxLanguageStandard: .cxx20
