@@ -2,8 +2,10 @@
 
 #include <mumble-core/MumbleCore.h>
 #include <opus/opus.h>
+#include <vpx/vp8cx.h>
 #include <vpx/vp8dx.h>
 #include <vpx/vpx_decoder.h>
+#include <vpx/vpx_encoder.h>
 
 #include <cstring>
 #include <optional>
@@ -162,6 +164,27 @@ size_t mv_session_make_audio(mv_session *session, const uint8_t *opus, size_t op
 	return copyOut(session->session.makeAudio(view(opus, opus_len), frame_number, target, is_last), out, out_cap);
 }
 
+size_t mv_session_make_video(mv_session *session, const mv_video_unit *u, void *ctx,
+							 void (*fn)(void *ctx, const uint8_t *bytes, size_t len)) {
+	VideoUnit unit;
+	unit.streamID             = u->stream_id;
+	unit.frameNumber          = u->frame_number;
+	unit.unitID               = u->unit_id;
+	unit.isKeyframe           = u->is_keyframe;
+	unit.isFrameEnd           = u->is_frame_end;
+	unit.captureTimestampUsec = u->capture_timestamp_usec;
+	unit.x                    = u->x;
+	unit.y                    = u->y;
+	unit.width                = u->width;
+	unit.height               = u->height;
+	unit.payload.assign(u->payload, u->payload + u->payload_len);
+	const std::vector< Bytes > datagrams = session->session.makeVideo(unit);
+	for (const Bytes &d : datagrams) {
+		fn(ctx, d.data(), d.size());
+	}
+	return datagrams.size();
+}
+
 void mv_session_remove_sender(mv_session *session, uint32_t sender_session) {
 	session->session.removeSender(sender_session);
 }
@@ -274,4 +297,71 @@ int mv_vpx_decode(mv_vpx_decoder *decoder, const uint8_t *data, size_t len, mv_i
 	frame->u_stride = img->stride[VPX_PLANE_U];
 	frame->v_stride = img->stride[VPX_PLANE_V];
 	return 1;
+}
+
+// --- libvpx encoding ----------------------------------------------------------------------------------
+
+struct mv_vpx_encoder {
+	vpx_codec_ctx_t ctx;
+	vpx_image_t img;
+	uint32_t width, height;
+};
+
+mv_vpx_encoder *mv_vpx_encoder_create(uint32_t width, uint32_t height, uint32_t fps, uint32_t bitrate_kbps) {
+	vpx_codec_enc_cfg_t cfg;
+	if (vpx_codec_enc_config_default(vpx_codec_vp8_cx(), &cfg, 0) != VPX_CODEC_OK) {
+		return nullptr;
+	}
+	cfg.g_w               = width;
+	cfg.g_h               = height;
+	cfg.g_timebase.num    = 1;
+	cfg.g_timebase.den    = static_cast< int >(fps);
+	cfg.rc_target_bitrate = bitrate_kbps;
+	cfg.rc_end_usage      = VPX_CBR;
+	cfg.g_lag_in_frames   = 0;
+	cfg.g_error_resilient = VPX_ERROR_RESILIENT_DEFAULT;
+	cfg.kf_max_dist       = 120;
+	cfg.g_threads         = 2;
+	auto *e               = new mv_vpx_encoder();
+	if (vpx_codec_enc_init(&e->ctx, vpx_codec_vp8_cx(), &cfg, 0) != VPX_CODEC_OK) {
+		delete e;
+		return nullptr;
+	}
+	vpx_codec_control(&e->ctx, VP8E_SET_CPUUSED, 8);
+	e->width  = width;
+	e->height = height;
+	return e;
+}
+
+void mv_vpx_encoder_destroy(mv_vpx_encoder *encoder) {
+	if (encoder) {
+		vpx_codec_destroy(&encoder->ctx);
+		delete encoder;
+	}
+}
+
+int mv_vpx_encode(mv_vpx_encoder *e, const uint8_t *y, const uint8_t *u, const uint8_t *v, int64_t pts,
+				  bool force_keyframe, void *ctx, void (*fn)(void *ctx, const uint8_t *data, size_t len, bool keyframe)) {
+	vpx_image_t img;
+	vpx_img_wrap(&img, VPX_IMG_FMT_I420, e->width, e->height, 1, const_cast< uint8_t * >(y));
+	img.planes[VPX_PLANE_U] = const_cast< uint8_t * >(u);
+	img.planes[VPX_PLANE_V] = const_cast< uint8_t * >(v);
+	img.stride[VPX_PLANE_Y] = static_cast< int >(e->width);
+	img.stride[VPX_PLANE_U] = static_cast< int >((e->width + 1) / 2);
+	img.stride[VPX_PLANE_V] = static_cast< int >((e->width + 1) / 2);
+	if (vpx_codec_encode(&e->ctx, &img, pts, 1, force_keyframe ? VPX_EFLAG_FORCE_KF : 0, VPX_DL_REALTIME)
+		!= VPX_CODEC_OK) {
+		return -1;
+	}
+	int packets                 = 0;
+	vpx_codec_iter_t iter       = nullptr;
+	const vpx_codec_cx_pkt_t *p = nullptr;
+	while ((p = vpx_codec_get_cx_data(&e->ctx, &iter))) {
+		if (p->kind == VPX_CODEC_CX_FRAME_PKT) {
+			fn(ctx, static_cast< const uint8_t * >(p->data.frame.buf), p->data.frame.sz,
+			   (p->data.frame.flags & VPX_FRAME_IS_KEY) != 0);
+			packets++;
+		}
+	}
+	return packets;
 }

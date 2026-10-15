@@ -102,6 +102,10 @@ void mv_session_drain(mv_session *session, const mv_sink *sink);
 size_t mv_session_make_ping(mv_session *session, uint64_t timestamp, uint8_t *out, size_t out_cap);
 size_t mv_session_make_audio(mv_session *session, const uint8_t *opus, size_t opus_len, uint64_t frame_number,
 							 uint32_t target, bool is_last, uint8_t *out, size_t out_cap);
+/// Fragments and encrypts one video unit (its sender_session is ignored); fn is called for each datagram.
+/// Returns the number of datagrams (0 if not keyed, framing is plain, or the unit is too large).
+size_t mv_session_make_video(mv_session *session, const mv_video_unit *unit, void *ctx,
+							 void (*fn)(void *ctx, const uint8_t *bytes, size_t len));
 void mv_session_remove_sender(mv_session *session, uint32_t sender_session);
 mv_stats mv_session_stats(const mv_session *session);
 
@@ -137,6 +141,16 @@ typedef struct {
 
 /// Decodes one compressed frame. Returns 1 and fills frame if a picture is ready, 0 if none, < 0 on error.
 int mv_vpx_decode(mv_vpx_decoder *decoder, const uint8_t *data, size_t len, mv_i420_frame *frame);
+
+// --- libvpx encoding (VP8, realtime) ---------------------------------------------------------------
+
+typedef struct mv_vpx_encoder mv_vpx_encoder;
+mv_vpx_encoder *mv_vpx_encoder_create(uint32_t width, uint32_t height, uint32_t fps, uint32_t bitrate_kbps);
+void mv_vpx_encoder_destroy(mv_vpx_encoder *encoder);
+/// Encodes one I420 frame (tightly packed planes). fn is called once per output packet.
+int mv_vpx_encode(mv_vpx_encoder *encoder, const uint8_t *y, const uint8_t *u, const uint8_t *v, int64_t pts,
+				  bool force_keyframe, void *ctx,
+				  void (*fn)(void *ctx, const uint8_t *data, size_t len, bool keyframe));
 
 #ifdef __cplusplus
 }

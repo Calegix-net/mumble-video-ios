@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 
 /// Microphone and speaker for a MumbleClient: AVAudioEngine with Apple's voice processing (echo
@@ -7,8 +7,8 @@ import Foundation
 ///
 /// Bluetooth plays as media (A2DP) rather than as a hands-free call, the same choice the Android client
 /// made for cars: no call screen, no drop to call quality; the phone's microphone records.
-public final class VoiceEngine: MediaSink, @unchecked Sendable {
-    public let mixer = VoiceMixer()
+public final class VoiceEngine: @unchecked Sendable {
+    public let mixer: VoiceMixer
     public let encoder: VoiceEncoder
     private let client: MumbleClient
     private let engine = AVAudioEngine()
@@ -16,14 +16,15 @@ public final class VoiceEngine: MediaSink, @unchecked Sendable {
     private let captureFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 48_000, channels: 1, interleaved: true)!
     private var running = false
 
-    public init?(client: MumbleClient) {
+    /// Plays `mixer` (which MediaHub feeds) and sends what the microphone hears through `client`.
+    public init?(client: MumbleClient, mixer: VoiceMixer) {
         guard let encoder = VoiceEncoder() else { return nil }
         self.encoder = encoder
         self.client = client
+        self.mixer = mixer
         encoder.onPacket = { [weak client] opus, frame, isLast in
             client?.sendAudio(opus: opus, frameNumber: frame, isLast: isLast)
         }
-        client.media = self
     }
 
     /// Starts playback, and capture too if `capture` (needs microphone permission).
@@ -93,10 +94,4 @@ public final class VoiceEngine: MediaSink, @unchecked Sendable {
         guard error == nil, let data = out.int16ChannelData else { return }
         encoder.feed(Array(UnsafeBufferPointer(start: data[0], count: Int(out.frameLength))))
     }
-
-    // MARK: MediaSink
-
-    public func audio(_ packet: AudioPacket) { mixer.push(packet) }
-    public func video(_ unit: VideoUnit) {}
-    public func senderRemoved(_ session: UserSession) { mixer.remove(session.raw) }
 }

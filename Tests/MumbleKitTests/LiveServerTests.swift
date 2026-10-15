@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 @testable import MumbleKit
 import Testing
@@ -86,6 +87,80 @@ struct LiveServerTests {
         speaker.disconnect()
         listener.disconnect()
     }
+}
+
+extension LiveServerTests {
+    /// One client sends a VP8 stream; the other sees it announced, subscribes (asking for a keyframe, which
+    /// the sender honours) and decodes pictures of the right size and colour.
+    @Test(.enabled(if: server != nil)) func videoReachesAWatcher() async throws {
+        let (host, port) = try #require(Self.server)
+        let sender = MumbleClient(), watcher = MumbleClient()
+        let receiver = VideoReceiver()
+        let hub = MediaHub(mixer: VoiceMixer(), video: receiver) // client.media is weak: keep it alive here
+        watcher.media = hub
+        for (client, name) in [(sender, "ios-sender"), (watcher, "ios-watcher")] {
+            client.connect(ConnectRequest(host: host, port: port, username: "\(name)-\(Int.random(in: 1000 ... 9999))"))
+            try await waitFor(10) {
+                if case .certificateTrustRequired = client.state.connection { return true }
+                return client.state.connection.isConnected
+            }
+            if case let .certificateTrustRequired(cert) = client.state.connection { client.trust(cert) }
+            try await waitFor(15) { client.state.connection.isConnected && client.state.udpActive && client.state.capabilities.known }
+        }
+        #expect(watcher.state.capabilities.video)
+
+        let wantKey = KeyframeFlag()
+        sender.onKeyframeRequested = { _ in wantKey.set() }
+        sender.announceVideo(streamID: 3, codec: .vp8, source: .camera, name: "Synthetic", width: 320, height: 240, fps: 30, bitrate: 600_000)
+        let senderSession = try #require(sender.state.server.selfSession).raw
+        let key = StreamKey(session: senderSession, streamID: 3)
+        try await waitFor(5) { watcher.state.videoStreams.contains { $0.key == key } }
+        let stream = try #require(watcher.state.videoStreams.first { $0.key == key })
+        #expect(stream.codec == .vp8)
+        #expect(stream.width == 320)
+
+        let frames = FrameCollector()
+        receiver.onFrame = { k, img in if k == key { frames.add(img) } }
+        receiver.onKeyframeNeeded = { k in watcher.requestKeyframe(k) }
+        receiver.watch(stream)
+        watcher.subscribe(key)
+
+        let enc = try #require(VP8Encoder(width: 320, height: 240))
+        for n in 0 ..< 60 {
+            let force = wantKey.take()
+            for (data, isKey) in enc.encode(testFrame(width: 320, height: 240, y: 81, u: 90, v: 240, bar: n), pts: Int64(n), forceKeyframe: force) {
+                sender.sendVideo(VideoUnit(senderSession: 0, streamID: 3, frameNumber: UInt64(n), unitID: 0, isKeyframe: isKey, isFrameEnd: true,
+                                           captureTimestampUsec: UInt64(n) * 33_333, x: 0, y: 0, width: 320, height: 240, payload: data))
+            }
+            try await Task.sleep(for: .milliseconds(33))
+        }
+        try await waitFor(5) { frames.count >= 20 }
+        let img = try #require(frames.last)
+        #expect(img.width == 320 && img.height == 240)
+        let (r, g, b) = pixel(img, 300, 120)
+        #expect(r > 200 && g < 60 && b < 60)
+
+        sender.endVideo(streamID: 3)
+        try await waitFor(5) { !watcher.state.videoStreams.contains { $0.key == key } }
+        sender.disconnect()
+        watcher.disconnect()
+        withExtendedLifetime(hub) {}
+    }
+}
+
+final class KeyframeFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    func set() { lock.withLock { flag = true } }
+    func take() -> Bool { lock.withLock { defer { flag = false }; return flag } }
+}
+
+final class FrameCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames: [CGImage] = []
+    func add(_ i: CGImage) { lock.withLock { frames.append(i) } }
+    var count: Int { lock.withLock { frames.count } }
+    var last: CGImage? { lock.withLock { frames.last } }
 }
 
 final class CountingSink: MediaSink, @unchecked Sendable {

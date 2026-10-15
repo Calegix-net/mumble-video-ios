@@ -16,6 +16,8 @@ public final class ClientState {
     /// true once a UDP ping came back; voice then goes over UDP instead of the TCP tunnel.
     public internal(set) var udpActive = false
     public internal(set) var serverRelease: String = ""
+    /// Streams other users are sending. Empty until the server's capabilities say it speaks video.
+    public internal(set) var videoStreams: [RemoteVideoStream] = []
 
     public init() {}
 }
@@ -49,6 +51,10 @@ public final class MumbleClient: @unchecked Sendable {
     private var udpVerified = false
     private var udpPingsUnanswered = 0
     private let started = DispatchTime.now()
+    private var videoStreams: [StreamKey: RemoteVideoStream] = [:]
+    private var lastKeyframeRequest: [StreamKey: Date] = [:]
+    /// Called on the client queue when a viewer asks for a keyframe of one of our streams.
+    public var onKeyframeRequested: ((UInt32) -> Void)?
 
     @MainActor public init(state: ClientState = ClientState()) {
         self.state = state
@@ -60,7 +66,7 @@ public final class MumbleClient: @unchecked Sendable {
         queue.async { [self] in
             teardown()
             self.request = request
-            publish { $0.connection = .connecting; $0.server = ServerState(); $0.capabilities = ServerCapabilities(); $0.udpActive = false }
+            publish { $0.connection = .connecting; $0.server = ServerState(); $0.capabilities = ServerCapabilities(); $0.udpActive = false; $0.videoStreams = [] }
             let identity = request.identityPKCS12.flatMap(loadIdentity)
             link = TLSLink(host: request.host, port: request.port, identity: identity,
                            trustedSHA256: request.trustedCertificateSHA256, queue: queue) { [weak self] event in
@@ -134,6 +140,114 @@ public final class MumbleClient: @unchecked Sendable {
                 tunnel(opus: opus, frameNumber: frameNumber, target: target, isLast: isLast)
             }
         }
+    }
+
+    // MARK: - Video
+
+    /// Start receiving a stream; asks the sender for a keyframe so decoding can begin.
+    public func subscribe(_ key: StreamKey, preferredBandwidth: UInt32 = 0) {
+        queue.async { [self] in
+            lastKeyframeRequest[key] = Date()
+            sendSubscribe(key, subscribe: true, keyframe: true, bandwidth: preferredBandwidth)
+        }
+    }
+
+    public func unsubscribe(_ key: StreamKey) {
+        queue.async { [self] in sendSubscribe(key, subscribe: false, keyframe: false, bandwidth: 0) }
+    }
+
+    /// Ask for a keyframe after unrecoverable loss; at most once a second per stream.
+    public func requestKeyframe(_ key: StreamKey) {
+        queue.async { [self] in
+            if let last = lastKeyframeRequest[key], Date().timeIntervalSince(last) < 1 { return }
+            lastKeyframeRequest[key] = Date()
+            sendSubscribe(key, subscribe: true, keyframe: true, bandwidth: 0)
+        }
+    }
+
+    private func sendSubscribe(_ key: StreamKey, subscribe: Bool, keyframe: Bool, bandwidth: UInt32) {
+        var m = MumbleProto_VideoSubscribe()
+        m.session = key.session
+        m.streamID = key.streamID
+        m.subscribe = subscribe
+        if keyframe { m.requestKeyframe = true }
+        if bandwidth > 0 { m.preferredBandwidth = bandwidth }
+        send(MumbleCoreType.videoSubscribe, m)
+    }
+
+    /// Announce one of our streams (VideoState active). Every change of codec or size needs a new id.
+    public func announceVideo(streamID: UInt32, codec: MumbleProto_VideoState.Codec, source: MumbleProto_VideoState.SourceKind,
+                              name: String, width: UInt32, height: UInt32, fps: UInt32, bitrate: UInt32) {
+        queue.async { [self] in
+            var m = MumbleProto_VideoState()
+            m.streamID = streamID
+            m.active = true
+            m.codec = codec
+            m.sourceKind = source
+            m.sourceName = name
+            m.width = width
+            m.height = height
+            m.maxFramerate = fps
+            m.targetBandwidth = bitrate
+            send(MumbleCoreType.videoState, m)
+        }
+    }
+
+    public func endVideo(streamID: UInt32) {
+        queue.async { [self] in
+            var m = MumbleProto_VideoState()
+            m.streamID = streamID
+            m.active = false
+            send(MumbleCoreType.videoState, m)
+        }
+    }
+
+    /// Send one unit of our stream. Video only goes over verified UDP.
+    public func sendVideo(_ unit: VideoUnit) {
+        queue.async { [self] in
+            guard udpVerified, let udp else { return }
+            for d in session.makeVideo(unit) { udp.send(content: d, completion: .idempotent) }
+        }
+    }
+
+    private func handleVideoState(_ m: MumbleProto_VideoState) {
+        guard m.hasSession else { return }
+        let key = StreamKey(session: m.session, streamID: m.streamID)
+        if m.active {
+            let source: VideoSourceKind = switch m.sourceKind {
+            case .camera: .camera
+            case .display: .display
+            case .window: .window
+            case .application: .application
+            default: .unknown
+            }
+            videoStreams[key] = RemoteVideoStream(key: key, codec: VideoCodec(m.codec), source: source, sourceName: m.sourceName,
+                                                  width: m.width, height: m.height, maxFramerate: m.maxFramerate)
+        } else {
+            videoStreams[key] = nil
+            lastKeyframeRequest[key] = nil
+        }
+        publishVideo()
+    }
+
+    private func handleVideoSubscribe(_ m: MumbleProto_VideoSubscribe) {
+        if m.session == server.selfSession?.raw {
+            // A viewer of one of our streams wants a keyframe.
+            if m.requestKeyframe { onKeyframeRequested?(m.streamID) }
+            return
+        }
+        // The server's echo of our own request: subscribe == false means it was refused.
+        let key = StreamKey(session: m.session, streamID: m.streamID)
+        if !m.subscribe, var s = videoStreams[key] {
+            s.denied = true
+            videoStreams[key] = s
+            publishVideo()
+        }
+    }
+
+    private func publishVideo() {
+        let list = capabilities.video ? videoStreams.values.sorted { ($0.key.session, $0.key.streamID) < ($1.key.session, $1.key.streamID) } : []
+        publish { $0.videoStreams = list }
     }
 
     // MARK: - Control channel
@@ -213,6 +327,8 @@ public final class MumbleClient: @unchecked Sendable {
                 let m = try MumbleProto_UserRemove(serializedBytes: payload)
                 ServerReducer.remove(m, from: &server)
                 session.removeSender(m.session)
+                videoStreams = videoStreams.filter { $0.key.session != m.session }
+                publishVideo()
                 media?.senderRemoved(UserSession(m.session))
                 publishServer()
             case MumbleCoreType.textMessage:
@@ -230,6 +346,7 @@ public final class MumbleClient: @unchecked Sendable {
                 if first { session.setChannelFraming(capabilities.video) }
                 let caps = capabilities
                 publish { $0.capabilities = caps }
+                publishVideo()
                 startUDPIfReady()
             case MumbleCoreType.udpTunnel:
                 handle(session.receiveTunnelled(payload))
@@ -239,12 +356,16 @@ public final class MumbleClient: @unchecked Sendable {
                     let ms = Double(nowUsec() &- m.timestamp) / 1000
                     publish { $0.tcpPingMs = ms }
                 }
+            case MumbleCoreType.videoState:
+                handleVideoState(try MumbleProto_VideoState(serializedBytes: payload))
+            case MumbleCoreType.videoSubscribe:
+                handleVideoSubscribe(try MumbleProto_VideoSubscribe(serializedBytes: payload))
             case MumbleCoreType.permissionDenied:
                 let m = try MumbleProto_PermissionDenied(serializedBytes: payload)
                 let text = m.reason.isEmpty ? "Permission denied" : m.reason
                 publish { $0.messages.append(ChatMessage(sender: nil, senderName: "Server", body: text)) }
             default:
-                break // VideoState / VideoSubscribe: phase 4; the rest is not used by this client yet.
+                break // not used by this client yet
             }
         } catch {
             NSLog("MumbleClient: could not parse control message %d: %@", type, "\(error)")
@@ -370,6 +491,8 @@ public final class MumbleClient: @unchecked Sendable {
         server = ServerState()
         capabilities = ServerCapabilities()
         seenServerConfig = false
+        videoStreams = [:]
+        lastKeyframeRequest = [:]
         udpVerified = false
         udpPingsUnanswered = 0
         serverVersionV2 = 0

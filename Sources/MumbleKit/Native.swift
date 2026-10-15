@@ -101,6 +101,23 @@ public final class MediaSession {
         return n > 0 ? Data(out[0 ..< n]) : nil
     }
 
+    /// Fragments and encrypts one video unit into datagrams (empty if not keyed or framing is plain).
+    public func makeVideo(_ unit: VideoUnit) -> [Data] {
+        final class Out { var datagrams: [Data] = [] }
+        let out = Out()
+        unit.payload.withUnsafeBytes { p in
+            var u = mv_video_unit(sender_session: 0, stream_id: unit.streamID, frame_number: unit.frameNumber, unit_id: unit.unitID,
+                                  is_keyframe: unit.isKeyframe, is_frame_end: unit.isFrameEnd, capture_timestamp_usec: unit.captureTimestampUsec,
+                                  x: unit.x, y: unit.y, width: unit.width, height: unit.height,
+                                  payload: p.bindMemory(to: UInt8.self).baseAddress, payload_len: p.count)
+            _ = mv_session_make_video(handle, &u, Unmanaged.passUnretained(out).toOpaque()) { ctx, b, n in
+                guard let ctx, let b else { return }
+                Unmanaged<Out>.fromOpaque(ctx).takeUnretainedValue().datagrams.append(Data(bytes: b, count: n))
+            }
+        }
+        return out.datagrams
+    }
+
     public func removeSender(_ session: UInt32) {
         mv_session_remove_sender(handle, session)
     }
