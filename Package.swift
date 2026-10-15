@@ -9,6 +9,9 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "MumbleKit", targets: ["MumbleKit"]),
+        // Screen sharing: the H.264 encoder and the socket to the app. Apple frameworks only, so the
+        // broadcast extension (50 MB memory limit) links nothing else.
+        .library(name: "MumbleShare", targets: ["MumbleShare"]),
         .executable(name: "mv-test-peer", targets: ["mv-test-peer"]),
     ],
     dependencies: [
@@ -26,8 +29,9 @@ let package = Package(
             name: "MumbleKit",
             dependencies: ["CMumbleBridge", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
         ),
+        .target(name: "MumbleShare"),
         .executableTarget(name: "mv-test-peer", dependencies: ["MumbleKit"]),
-        .testTarget(name: "MumbleKitTests", dependencies: ["MumbleKit"], resources: [.copy("Resources")]),
+        .testTarget(name: "MumbleKitTests", dependencies: ["MumbleKit", "MumbleShare"], resources: [.copy("Resources")]),
     ],
     cxxLanguageStandard: .cxx20
 )

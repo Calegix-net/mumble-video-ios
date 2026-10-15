@@ -171,6 +171,7 @@ struct VideoListView: View {
     var body: some View {
         let streams = model.state.videoStreams.filter { $0.codec.isPicture }
         ScrollView {
+            OwnVideoPanel().padding(.horizontal).padding(.top, 8)
             if streams.isEmpty {
                 ContentUnavailableView("Nobody is sharing video", systemImage: "video.slash",
                                        description: Text("Shares from people on this server appear here."))
@@ -212,6 +213,61 @@ struct VideoTile: View {
             .onTapGesture { watching ? model.stopWatching(stream.key) : model.watch(stream) }
             Text("\(name) · \(stream.source == .camera ? "camera" : "screen")\(stream.sourceName.isEmpty ? "" : " · \(stream.sourceName)")")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// What we send: the camera (with a preview) and the screen.
+struct OwnVideoPanel: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let ready = model.state.udpActive
+        VStack(alignment: .leading, spacing: 10) {
+            if model.sendingCamera {
+                ZStack(alignment: .topTrailing) {
+                    Rectangle().fill(.black)
+                    if let preview = model.cameraPreview {
+                        Image(decorative: preview, scale: 1).resizable().aspectRatio(contentMode: .fit)
+                    } else {
+                        ProgressView().tint(.white)
+                    }
+                    Label(model.cameraIsTestPattern ? "Test pattern" : "Live", systemImage: "dot.radiowaves.left.and.right")
+                        .font(.caption.bold()).padding(6).background(.red, in: Capsule()).foregroundStyle(.white).padding(8)
+                }
+                .aspectRatio(model.cameraPreview.map { CGFloat($0.width) / CGFloat(max($0.height, 1)) } ?? 4 / 3, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            HStack(spacing: 12) {
+                Button {
+                    model.sendingCamera ? model.stopCamera() : model.startCamera()
+                } label: {
+                    Label(model.sendingCamera ? "Stop" : "Camera", systemImage: model.sendingCamera ? "video.slash.fill" : "video.fill")
+                        .lineLimit(1)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(model.sendingCamera ? .red : .accentColor)
+                .disabled(!ready)
+                if model.sendingCamera {
+                    Button { model.switchCamera() } label: { Image(systemName: "arrow.triangle.2.circlepath.camera") }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Switch camera")
+                }
+                Spacer()
+                if model.sharingScreen {
+                    Button(role: .destructive) { model.stopScreenShare() } label: {
+                        Label("Stop sharing", systemImage: "rectangle.on.rectangle.slash").lineLimit(1)
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    ScreenShareButton(enabled: ready && model.screenShareAvailable)
+                }
+            }
+            if !ready {
+                Text("Video starts once the voice connection is up.").font(.caption).foregroundStyle(.secondary)
+            } else if !model.screenShareAvailable {
+                Text("Screen sharing needs a signed build (App Group).").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 }

@@ -215,7 +215,7 @@ final class H264FrameDecoder: FrameDecoder, @unchecked Sendable {
 
 extension I420Frame {
     /// BT.601 video-range YUV to an sRGB CGImage, via vImage.
-    func cgImage() -> CGImage? {
+    public func cgImage() -> CGImage? {
         var info = vImage_YpCbCrToARGB()
         var pixelRange = vImage_YpCbCrPixelRange(Yp_bias: 16, CbCr_bias: 128, YpRangeMax: 235, CbCrRangeMax: 240,
                                                  YpMax: 235, YpMin: 16, CbCrMax: 240, CbCrMin: 16)

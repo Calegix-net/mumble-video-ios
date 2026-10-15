@@ -53,8 +53,11 @@ public final class MumbleClient: @unchecked Sendable {
     private let started = DispatchTime.now()
     private var videoStreams: [StreamKey: RemoteVideoStream] = [:]
     private var lastKeyframeRequest: [StreamKey: Date] = [:]
+    private var resendHistory = VideoResendHistory()
     /// Called on the client queue when a viewer asks for a keyframe of one of our streams.
     public var onKeyframeRequested: ((UInt32) -> Void)?
+    /// Ids for our outgoing streams (VideoSender takes them from here).
+    public let videoStreamIDs = VideoStreamIDs()
 
     @MainActor public init(state: ClientState = ClientState()) {
         self.state = state
@@ -195,6 +198,7 @@ public final class MumbleClient: @unchecked Sendable {
 
     public func endVideo(streamID: UInt32) {
         queue.async { [self] in
+            resendHistory.forget(stream: streamID)
             var m = MumbleProto_VideoState()
             m.streamID = streamID
             m.active = false
@@ -202,11 +206,31 @@ public final class MumbleClient: @unchecked Sendable {
         }
     }
 
-    /// Send one unit of our stream. Video only goes over verified UDP.
+    /// Send one unit of our stream. Video only goes over verified UDP. The unit is kept for a second in case
+    /// a viewer asks for some of it again.
     public func sendVideo(_ unit: VideoUnit) {
         queue.async { [self] in
             guard udpVerified, let udp else { return }
-            for d in session.makeVideo(unit) { udp.send(content: d, completion: .idempotent) }
+            let datagrams = session.makeVideo(unit)
+            guard !datagrams.isEmpty else { return }
+            resendHistory.record(unit, nowUsec: nowUsec())
+            for d in datagrams { udp.send(content: d, completion: .idempotent) }
+        }
+    }
+
+    /// The server's capabilities as the client sees them now, from any thread but the client's queue.
+    public var currentCapabilities: ServerCapabilities { queue.sync { capabilities } }
+
+    /// Fragments re-sent in answer to viewers' VideoNacks, on this connection.
+    public var videoFragmentsResent: Int { queue.sync { resendHistory.fragmentsResent } }
+
+    private func answerNacks(_ nacks: [Data]) {
+        guard udpVerified, let udp else { return }
+        for bytes in nacks {
+            guard let nack = try? MumbleUDP_VideoNack(serializedBytes: bytes) else { continue }
+            for d in resendHistory.answer(nack, nowUsec: nowUsec(), encrypt: session.makeVideo) {
+                udp.send(content: d, completion: .idempotent)
+            }
         }
     }
 
@@ -428,6 +452,7 @@ public final class MumbleClient: @unchecked Sendable {
             }
             publish { $0.udpActive = true; $0.udpPingMs = ms }
         }
+        if !events.videoNacksForUs.isEmpty { answerNacks(events.videoNacksForUs) }
         if let media {
             for a in events.audio { media.audio(a) }
             for v in events.video { media.video(v) }
@@ -493,6 +518,7 @@ public final class MumbleClient: @unchecked Sendable {
         seenServerConfig = false
         videoStreams = [:]
         lastKeyframeRequest = [:]
+        resendHistory = VideoResendHistory()
         udpVerified = false
         udpPingsUnanswered = 0
         serverVersionV2 = 0

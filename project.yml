@@ -21,6 +21,15 @@ targets:
     sources: [App]
     dependencies:
       - package: MumbleKit
+        product: MumbleKit
+      - package: MumbleKit
+        product: MumbleShare
+      - target: MumbleVideoBroadcast
+        embed: true
+    entitlements:
+      path: App/MumbleVideo.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.calegix.mumblevideo]
     info:
       path: App/Info.plist
       properties:
@@ -29,6 +38,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UIBackgroundModes: [audio]
         NSMicrophoneUsageDescription: Mumble Video sends your voice to the people in your channel.
+        NSCameraUsageDescription: Mumble Video sends your camera to the people in your channel when you turn it on.
         NSLocalNetworkUsageDescription: Mumble Video connects to voice servers on your network.
         CFBundleURLTypes:
           - CFBundleURLName: com.calegix.mumblevideo.link
@@ -36,5 +46,32 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.calegix.mumblevideo.ios
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+  # Screen sharing: a ReplayKit broadcast upload extension. It encodes the screen and hands the frames to
+  # the app over a socket in the shared App Group container (Sources/MumbleShare).
+  MumbleVideoBroadcast:
+    type: app-extension
+    platform: iOS
+    sources: [Broadcast]
+    dependencies:
+      - package: MumbleKit
+        product: MumbleShare
+      - sdk: ReplayKit.framework
+    entitlements:
+      path: Broadcast/Broadcast.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.calegix.mumblevideo]
+    info:
+      path: Broadcast/Info.plist
+      properties:
+        CFBundleDisplayName: Mumble Video
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.calegix.mumblevideo.ios.broadcast
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic

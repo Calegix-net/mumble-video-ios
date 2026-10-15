@@ -34,6 +34,17 @@ final class AppModel {
     var deafened = false
     var audioError: String?
 
+    /// Our camera stream, and a small picture of it for the user.
+    private(set) var sendingCamera = false
+    private(set) var cameraPreview: CGImage?
+    private(set) var cameraIsTestPattern = false
+    private var camera: CameraSource?
+    private var cameraSender: VideoSender?
+    /// Screen sharing through the broadcast extension; nil where there is no App Group (Simulator).
+    private(set) var sharingScreen = false
+    private(set) var screenShareAvailable = false
+    private var screen: ScreenShareHost?
+
     private var talkTimer: Timer?
 
     init() {
@@ -46,6 +57,12 @@ final class AppModel {
         }
         let client = client
         video.onKeyframeNeeded = { key in client.requestKeyframe(key) }
+        client.onKeyframeRequested = { [weak self] id in
+            DispatchQueue.main.async {
+                self?.cameraSender?.keyframeRequested(streamID: id)
+                self?.screen?.keyframeRequested(streamID: id)
+            }
+        }
     }
 
     // MARK: Connection
@@ -56,6 +73,7 @@ final class AppModel {
         r.trustedCertificateSHA256 = server.trustedSHA256
         client.connect(r)
         startAudio()
+        startScreenShareHost()
     }
 
     func trust(_ cert: CertificateInfo) {
@@ -67,6 +85,10 @@ final class AppModel {
     }
 
     func disconnect() {
+        stopCamera()
+        screen?.shutdown()
+        screen = nil
+        screenShareAvailable = false
         client.disconnect()
         voice?.stop()
         voice = nil
@@ -151,6 +173,58 @@ final class AppModel {
         frames[key] = nil
     }
 
+    // MARK: Sending video
+
+    func startCamera() {
+        guard !sendingCamera, state.capabilities.video, state.udpActive else { return }
+        let source = makeCameraSource()
+        let sender = VideoSender(client: client, codec: .vp8, source: .camera, name: "iPhone camera", fps: 30, bitrate: 800_000)
+        source.onFrame = Self.cameraPipeline(sender: sender) { [weak self] image in self?.cameraPreview = image }
+        camera = source
+        cameraSender = sender
+        cameraIsTestPattern = source is TestPatternCamera
+        sendingCamera = true
+        source.start()
+    }
+
+    /// Every picture to the encoder; every third one, as an image, to the preview on the main thread.
+    nonisolated private static func cameraPipeline(sender: VideoSender, preview: @escaping @MainActor (CGImage) -> Void)
+        -> @Sendable (I420Frame, UInt64) -> Void {
+        let count = Counter()
+        return { frame, t in
+            sender.send(frame, timestampUsec: t)
+            guard count.next() % 3 == 0, let image = frame.cgImage() else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { preview(image) } }
+        }
+    }
+
+    func stopCamera() {
+        camera?.onFrame = nil
+        camera?.stop()
+        cameraSender?.stop()
+        camera = nil
+        cameraSender = nil
+        cameraPreview = nil
+        sendingCamera = false
+    }
+
+    func switchCamera() { camera?.switchCamera() }
+
+    func stopScreenShare() { screen?.stopSharing() }
+
+    private func startScreenShareHost() {
+        screen?.shutdown()
+        guard let host = ScreenShareHost() else {
+            screen = nil
+            screenShareAvailable = false
+            return
+        }
+        host.onSharingChanged = { [weak self] on in self?.sharingScreen = on }
+        host.start(client: client)
+        screen = host
+        screenShareAvailable = true
+    }
+
     // MARK: Saved servers
 
     func save(_ server: SavedServer) {
@@ -176,4 +250,10 @@ final class AppModel {
               let list = try? JSONDecoder().decode([SavedServer].self, from: data) else { return [] }
         return list
     }
+}
+
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func next() -> Int { lock.withLock { defer { n += 1 }; return n } }
 }
