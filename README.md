@@ -13,7 +13,6 @@ use; the app adds TLS, audio, codecs and a SwiftUI interface.
   Pins are in `tools/versions.sh` (OpenSSL, Protobuf, Abseil and Opus match the Android client).
 - `Sources/CMumbleBridge`: a small C surface over mumble-core, Opus and libvpx, so Swift imports it as-is.
 - `Sources/MumbleKit`: the Swift client core.
-
 - `App/`: the SwiftUI app (`project.yml`; `tools/gen-project.sh` generates `MumbleVideo.xcodeproj`).
 - `Sources/mv-test-peer`: a scripted peer that joins a server, speaks a tone and streams a VP8 test
   pattern, so there is someone to hear and something to watch.
