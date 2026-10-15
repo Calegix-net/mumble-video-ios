@@ -10,6 +10,10 @@ let package = Package(
     products: [
         .library(name: "MumbleKit", targets: ["MumbleKit"]),
     ],
+    dependencies: [
+        // Keep in step with SWIFT_PROTOBUF_VERSION in tools/versions.sh (the code generator).
+        .package(url: "https://github.com/apple/swift-protobuf.git", exact: "1.38.1"),
+    ],
     targets: [
         .binaryTarget(name: "MumbleNative", path: "Frameworks/MumbleNative.xcframework"),
         .target(
@@ -17,7 +21,10 @@ let package = Package(
             dependencies: ["MumbleNative"],
             linkerSettings: [.linkedLibrary("c++")]
         ),
-        .target(name: "MumbleKit", dependencies: ["CMumbleBridge"]),
+        .target(
+            name: "MumbleKit",
+            dependencies: ["CMumbleBridge", .product(name: "SwiftProtobuf", package: "swift-protobuf")]
+        ),
         .testTarget(name: "MumbleKitTests", dependencies: ["MumbleKit"], resources: [.copy("Resources")]),
     ],
     cxxLanguageStandard: .cxx20

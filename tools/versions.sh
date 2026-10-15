@@ -31,3 +31,6 @@ NASM_URL=https://www.nasm.us/pub/nasm/releasebuilds/$NASM_VERSION/macosx/nasm-$N
 
 IOS_MIN=17.0
 MACOS_MIN=14.0
+
+# Swift runtime and code generator for the control-channel protobufs (Package.swift pins the same).
+SWIFT_PROTOBUF_VERSION=1.38.1

@@ -119,7 +119,8 @@ build_vpx() {
 build_core() {
 	# mumble-core installs nothing when built standalone; the library stays in its build directory.
 	[ -f "$BUILD/mumble-core/libmumble-core.a" ] && return
-	cmake_slice mumble-core "$CORE_SRC" -DMUMBLE_CORE_PROTOBUF_LITE=ON -DMUMBLE_CORE_LEGACY_UDP=OFF \
+	local core_version; core_version=$(awk '{print $2}' "$ROOT/Vendor/mumble-core/CORE_REVISION" | sed 's/^v//')
+	cmake_slice mumble-core "$CORE_SRC" -DMUMBLE_CORE_VERSION="$core_version" -DMUMBLE_CORE_PROTOBUF_LITE=ON -DMUMBLE_CORE_LEGACY_UDP=OFF \
 		-DMUMBLE_CORE_TESTS=OFF -DMUMBLE_CORE_PROTOC_ARGS="PROTOC_EXE;$PROTOC" \
 		-DOPENSSL_ROOT_DIR="$PREFIX" -DOPENSSL_USE_STATIC_LIBS=ON \
 		-DCMAKE_CXX_FLAGS="$MINFLAG -Wall -Wextra -Wsign-conversion -Werror"
