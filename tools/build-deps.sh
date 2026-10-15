@@ -73,7 +73,7 @@ cmake_slice() { # name srcdir [cmake args...]
 		-DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_FIND_ROOT_PATH="$PREFIX" \
 		-DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON "$@" >/dev/null
 	cmake --build "$BUILD/$name" -j"$JOBS" >/dev/null
-	cmake --install "$BUILD/$name" >/dev/null
+	[ "$name" = mumble-core ] || cmake --install "$BUILD/$name" >/dev/null
 }
 
 build_openssl() {
@@ -117,7 +117,8 @@ build_vpx() {
 }
 
 build_core() {
-	[ -f "$PREFIX/lib/libmumble-core.a" ] && return
+	# mumble-core installs nothing when built standalone; the library stays in its build directory.
+	[ -f "$BUILD/mumble-core/libmumble-core.a" ] && return
 	cmake_slice mumble-core "$CORE_SRC" -DMUMBLE_CORE_PROTOBUF_LITE=ON -DMUMBLE_CORE_LEGACY_UDP=OFF \
 		-DMUMBLE_CORE_TESTS=OFF -DMUMBLE_CORE_PROTOC_ARGS="PROTOC_EXE;$PROTOC" \
 		-DOPENSSL_ROOT_DIR="$PREFIX" -DOPENSSL_USE_STATIC_LIBS=ON \
@@ -128,9 +129,9 @@ merge_slice() { # one static library + headers per slice
 	local out="$WORK/$1/merged"
 	rm -rf "$out" && mkdir -p "$out/include"
 	libtool -static -o "$out/libMumbleNative.a" \
-		"$PREFIX/lib/libmumble-core.a" "$PREFIX/lib/libprotobuf-lite.a" "$PREFIX"/lib/libabsl_*.a \
+		"$BUILD/mumble-core/libmumble-core.a" "$PREFIX/lib/libprotobuf-lite.a" "$PREFIX"/lib/libabsl_*.a \
 		"$PREFIX"/lib/libutf8_*.a "$PREFIX/lib/libcrypto.a" "$PREFIX/lib/libopus.a" "$PREFIX/lib/libvpx.a" 2>/dev/null
-	cp -R "$PREFIX/include/mumble-core" "$PREFIX/include/opus" "$PREFIX/include/vpx" "$out/include/"
+	cp -R "$CORE_SRC/include/mumble-core" "$PREFIX/include/opus" "$PREFIX/include/vpx" "$out/include/"
 }
 
 fetch "$OPENSSL_URL" "$OPENSSL_SHA256" openssl.tar.gz
