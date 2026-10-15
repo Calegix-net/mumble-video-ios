@@ -1,0 +1,23 @@
+{
+  "description": "VideoCryptState::deriveFromSessionKey: SHA-256 of the 16-byte CryptSetup key followed by an ASCII label, truncated. The server encrypts with the s2c nonce base and the client with c2s.",
+  "cases": [
+    {
+      "sessionKey": "00000000000000000000000000000000",
+      "videoKey": "b609e0ebaa80cf0eecc32d9e274fd607",
+      "nonceBaseServerToClient": "a3e5b82a4ede24dce801801d",
+      "nonceBaseClientToServer": "738a5925f5911c800f46abea"
+    },
+    {
+      "sessionKey": "000102030405060708090a0b0c0d0e0f",
+      "videoKey": "b9f880daa9996852dc8128740db1dc91",
+      "nonceBaseServerToClient": "16e6c207dde0f74f1dcf6994",
+      "nonceBaseClientToServer": "78fc4a264ee0c054772a1efd"
+    },
+    {
+      "sessionKey": "8f1c2e4d5a6b7c8d9eafb0c1d2e3f405",
+      "videoKey": "f6bda0b9a1cf2bf9dd773f95ef61ebb2",
+      "nonceBaseServerToClient": "cad8bfa7f874f54c58856f83",
+      "nonceBaseClientToServer": "c4955a3b836e169f590355f6"
+    }
+  ]
+}

@@ -1,0 +1,1049 @@
+// Copyright The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
+
+syntax = "proto2";
+
+package MumbleProto;
+
+option optimize_for = SPEED;
+
+// Optional protocol features a peer implements.
+//
+// Mumble has no capability handshake: protocolVersionsAreCompatible() collapses everything to a single
+// pre/post-1.5 boolean, Reject.WrongVersion is never sent, and both dispatch switches (in the client's
+// MainWindow and the server's Server) silently ignore unknown message types. Historically each new
+// capability therefore got its own bool (Authenticate.opus, CodecVersion.opus). This enum generalises
+// that pattern so that further features do not each need a new field.
+//
+// The client advertises its features in Authenticate; the server advertises its own in ServerConfig.
+// Because the client sends Version and Authenticate back-to-back without waiting for the server's
+// Version, the client's advertisement is unconditional.
+//
+// FEATURE_VIDEO also decides how the UDP socket is framed. A peer speaking video puts a channel byte in
+// the clear in front of every encrypted datagram (MEDIA_CHANNEL_AUDIO or MEDIA_CHANNEL_VIDEO, see
+// VideoTransport.h), because audio and video hold separate crypt states and the receiver has to pick
+// one before it can decrypt anything. Every other Mumble sends the plain OCB2 datagram it always has.
+// The two cannot be told apart by looking: the first byte of a plain datagram is a rolling IV byte and
+// takes every value, 0x00 and 0x01 included. So the framing follows the advertisement, never the
+// packet. The server frames for a client exactly when that client's Authenticate listed FEATURE_VIDEO,
+// in both directions, and decides it before sending CryptSetup, so no datagram is ever exchanged under
+// the wrong framing. A stock client therefore keeps its voice on UDP; it is simply never told about
+// video. The client frames for the server exactly when the server's first ServerConfig listed
+// FEATURE_VIDEO. That arrives after CryptSetup, so until it does the client sends nothing on UDP and
+// tunnels its voice over TCP, which needs no framing; against a stock server it then uses plain UDP.
+//
+// One exception to never inferring from the version, for this fork's own releases v1.7.0 to v1.9.1.
+// They speak video - framed UDP, VideoState, VideoSubscribe - but predate the advertisement: they send
+// no features, and every one of them reports version 1.7.0 with the release string "1.7.0". A peer that
+// advertises no features and matches both exactly is treated as though it had advertised
+// FEATURE_VIDEO (MumbleProto::isLegacyVideoPeer). Upstream release builds carry a build number in the
+// patch field, so the only upstream build that matches is one compiled from source without one. It is
+// treated as speaking video, which costs it UDP - it falls back to the TCP tunnel, as every stock
+// client did against those releases - and nothing else.
+//
+// Ordering, which is easy to get wrong: the server sends ServerSync *before* ServerConfig (see
+// Server::sendUserList and the sync burst in murmur/Messages.cpp). ServerSync is what unblocks the
+// client's UI, so there is a window in which the user is fully connected and the server's feature set
+// has not arrived. A client MUST therefore keep all feature-gated UI disabled until it has seen a
+// ServerConfig, and MUST NOT infer feature support from the peer's version number.
+//
+// Both advertisements are read once, from the first message that carries them:
+//   - Authenticate is re-sent by clients to update tokens (ServerHandler::setTokens sends one
+//     containing only `tokens`). A server MUST read `features` only from the Authenticate that
+//     completes authentication and MUST ignore it on later ones, or updating a token would silently
+//     revoke the user's features.
+//   - ServerConfig doubles as a partial delta: Server::setLiveConf broadcasts one containing a single
+//     field whenever an admin changes bandwidth, user limit, message length or allow-HTML. A client
+//     MUST therefore treat `features` as authoritative only in the first ServerConfig of a session and
+//     MUST leave its view unchanged when a later ServerConfig omits it. Absence means "unchanged",
+//     never "disabled".
+//
+// A peer MUST NOT send a message belonging to a feature the other side did not advertise. Unknown
+// values in a repeated enum field are discarded by proto2 parsers, so a peer that does not know a
+// feature simply never advertises it and never receives it - degradation is silent but total, which is
+// the existing behaviour for every unknown message type. A receiver that is sent FEATURE_NONE MUST
+// ignore it.
+//
+// This is a top-level enum rather than a nested one (the file's usual style) only because it is shared
+// between two messages. Values are prefixed to avoid colliding with message names in the generated
+// MumbleProto namespace.
+enum Feature {
+	// Placeholder so that an empty repeated field and an explicitly-unknown feature are
+	// distinguishable. Never advertised.
+	FEATURE_NONE = 0;
+	// Real-time video streaming: the VideoState and VideoSubscribe control messages and the
+	// MumbleUDP.Video data message. Covers both webcam and screen sharing - they are one mechanism,
+	// distinguished by VideoState.SourceKind.
+	FEATURE_VIDEO = 1;
+	// Server-mediated file storage: the FileTransfer control message and TextMessage.attachments.
+	FEATURE_FILE_TRANSFER = 2;
+}
+
+// FEATURE_VIDEO is implemented, with its two permissions: ChanACL::ShareVideo (0x1000) to send
+// VideoState with active=true into a channel - separate from Speak, so an operator can allow talking
+// while forbidding screen sharing - and ChanACL::ReceiveVideo (0x2000) to subscribe to a stream in one.
+//
+// FEATURE_FILE_TRANSFER is not, and cannot be until the ACL system grows the two permissions it needs.
+// 0x4000 and 0x8000 are still free before the root-only block, which is exactly enough:
+//
+//   UploadFile    - offer a file into a channel. Not equivalent to TextMessage: text is ephemeral,
+//                   files consume disk and persist.
+//   DownloadFile  - fetch a stored file, re-checked per request rather than implied by holding an id.
+//
+// Deletion should reuse the existing root-only ResetUserContent, which already exists to wipe a user's
+// comment and avatar. Adding a Perm is not a one-line change: it touches ChanACL::All, permName(),
+// whatsThis(), the client's ACL editor, the Ice and gRPC interfaces, and the ACL database schema.
+// Shipping file transfer without that work would all but guarantee that its first implementation has
+// no permission model at all.
+
+message Version {
+	// Legacy version number format.
+	optional uint32 version_v1 = 1;
+	// New version number format.
+	// Necessary since patch level may exceed 255. (See https://github.com/mumble-voip/mumble/issues/5827)
+	optional uint64 version_v2 = 5;
+
+	// Client release name.
+	optional string release = 2;
+	// Client OS name.
+	optional string os = 3;
+	// Client OS version.
+	optional string os_version = 4;
+}
+
+// Not used. Not even for tunneling UDP through TCP.
+message UDPTunnel {
+	// Not used.
+	required bytes packet = 1;
+}
+
+// Used by the client to send the authentication credentials to the server.
+message Authenticate {
+	// UTF-8 encoded username.
+	optional string username = 1;
+	// Server or user password.
+	optional string password = 2;
+	// Additional access tokens for server ACL groups.
+	repeated string tokens = 3;
+	// A list of CELT bitstream version constants supported by the client.
+	repeated int32 celt_versions = 4;
+	optional bool opus = 5 [default = false];
+	// 0 = REGULAR, 1 = BOT
+	optional int32 client_type = 6 [default = 0];
+	// Optional protocol features this client implements. Sent unconditionally, as the client has not
+	// yet seen the server's Version at this point. Servers that do not know this field discard it,
+	// which is exactly the desired behaviour: they will never send the corresponding messages either.
+	// FEATURE_VIDEO here is also what makes the server frame this client's UDP for video; see Feature.
+	repeated Feature features = 7;
+}
+
+// Sent by the client to notify the server that the client is still alive.
+// Server must reply to the packet with the same timestamp and its own
+// good/late/lost/resync numbers. None of the fields is strictly required.
+message Ping {
+	// Client timestamp. Server should not attempt to decode.
+	optional uint64 timestamp = 1;
+	// The amount of good packets received.
+	optional uint32 good = 2;
+	// The amount of late packets received.
+	optional uint32 late = 3;
+	// The amount of packets never received.
+	optional uint32 lost = 4;
+	// The amount of nonce resyncs.
+	optional uint32 resync = 5;
+	// The total amount of UDP packets received.
+	optional uint32 udp_packets = 6;
+	// The total amount of TCP packets received.
+	optional uint32 tcp_packets = 7;
+	// UDP ping average.
+	optional float udp_ping_avg = 8;
+	// UDP ping variance.
+	optional float udp_ping_var = 9;
+	// TCP ping average.
+	optional float tcp_ping_avg = 10;
+	// TCP ping variance.
+	optional float tcp_ping_var = 11;
+}
+
+// Sent by the server when it rejects the user connection.
+message Reject {
+	enum RejectType {
+		// The rejection reason is unknown (details should be available
+		// in Reject.reason).
+		None = 0;
+		// The client attempted to connect with an incompatible version.
+		WrongVersion = 1;
+		// The user name supplied by the client was invalid.
+		InvalidUsername = 2;
+		// The client attempted to authenticate as a user with a password but it
+		// was wrong.
+		WrongUserPW = 3;
+		// The client attempted to connect to a passworded server but the password
+		// was wrong.
+		WrongServerPW = 4;
+		// Supplied username is already in use.
+		UsernameInUse = 5;
+		// Server is currently full and cannot accept more users.
+		ServerFull = 6;
+		// The user did not provide a certificate but one is required.
+		NoCertificate = 7;
+		AuthenticatorFail = 8;
+		// The server is currently not accepting new connections
+		NoNewConnections = 9;
+	}
+	// Rejection type.
+	optional RejectType type = 1;
+	// Human readable rejection reason.
+	optional string reason = 2;
+}
+
+// ServerSync message is sent by the server when it has authenticated the user
+// and finished synchronizing the server state.
+message ServerSync {
+	// The session of the current user.
+	optional uint32 session = 1;
+	// Maximum bandwidth that the user should use.
+	optional uint32 max_bandwidth = 2;
+	// Server welcome text.
+	optional string welcome_text = 3;
+	// Current user permissions in the root channel.
+	// Note: The permissions data type usually is uin32 (e.g. in PermissionQuery and PermissionDenied messages). Here
+	// it is uint64 because of an oversight in the past. Nonetheless it should never exceed the uin32 range.
+	// See also: https://github.com/mumble-voip/mumble/issues/5139
+	optional uint64 permissions = 4;
+}
+
+// Sent by the client when it wants a channel removed. Sent by the server when
+// a channel has been removed and clients should be notified.
+message ChannelRemove {
+	required uint32 channel_id = 1;
+}
+
+// Used to communicate channel properties between the client and the server.
+// Sent by the server during the login process or when channel properties are
+// updated. Client may use this message to update said channel properties.
+message ChannelState {
+	// Unique ID for the channel within the server.
+	optional uint32 channel_id = 1;
+	// channel_id of the parent channel.
+	optional uint32 parent = 2;
+	// UTF-8 encoded channel name.
+	optional string name = 3;
+	// A collection of channel id values of the linked channels. Absent during
+	// the first channel listing.
+	repeated uint32 links = 4;
+	// UTF-8 encoded channel description. Only if the description is less than
+	// 128 bytes
+	optional string description = 5;
+	// A collection of channel_id values that should be added to links.
+	repeated uint32 links_add = 6;
+	// A collection of channel_id values that should be removed from links.
+	repeated uint32 links_remove = 7;
+	// True if the channel is temporary.
+	optional bool temporary = 8 [default = false];
+	// Position weight to tweak the channel position in the channel list.
+	optional int32 position = 9 [default = 0];
+	// SHA1 hash of the description if the description is 128 bytes or more.
+	optional bytes description_hash = 10;
+	// Maximum number of users allowed in the channel. If this value is zero,
+	// the maximum number of users allowed in the channel is given by the
+	// server's "usersperchannel" setting.
+	optional uint32 max_users = 11;
+	// Whether this channel has enter restrictions (ACL denying ENTER) set
+	optional bool is_enter_restricted = 12;
+	// Whether the receiver of this msg is considered to be able to enter this channel
+	optional bool can_enter = 13;
+}
+
+// Used to communicate user leaving or being kicked. May be sent by the client
+// when it attempts to kick a user. Sent by the server when it informs the
+// clients that a user is not present anymore.
+message UserRemove {
+	// The user who is being kicked, identified by their session, not present
+	// when no one is being kicked.
+	required uint32 session = 1;
+	// The user who initiated the removal. Either the user who performs the kick
+	// or the user who is currently leaving.
+	optional uint32 actor = 2;
+	// Reason for the kick, stored as the ban reason if the user is banned.
+	optional string reason = 3;
+	// True if the user shall be banned, false if the user shall be kicked
+	optional bool ban = 4;
+	// True if the user shall be banned by certificate.
+	optional bool ban_certificate = 5;
+	// True if the user shall be banned by IP.
+	optional bool ban_ip = 6;
+}
+
+// Sent by the server when it communicates new and changed users to client.
+// First seen during login procedure. May be sent by the client when it wishes
+// to alter its state.
+message UserState {
+	message VolumeAdjustment {
+		optional uint32 listening_channel = 1;
+		optional float volume_adjustment = 2;
+	}
+
+	// Unique user session ID of the user whose state this is, may change on
+	// reconnect.
+	optional uint32 session = 1;
+	// The session of the user who is updating this user.
+	optional uint32 actor = 2;
+	// User name, UTF-8 encoded.
+	optional string name = 3;
+	// Registered user ID if the user is registered.
+	optional uint32 user_id = 4;
+	// Channel on which the user is.
+	optional uint32 channel_id = 5;
+	// True if the user is muted by admin.
+	optional bool mute = 6;
+	// True if the user is deafened by admin.
+	optional bool deaf = 7;
+	// True if the user has been suppressed from talking by a reason other than
+	// being muted.
+	optional bool suppress = 8;
+	// True if the user has muted self.
+	optional bool self_mute = 9;
+	// True if the user has deafened self.
+	optional bool self_deaf = 10;
+	// User image if it is less than 128 bytes.
+	optional bytes texture = 11;
+	// The positional audio plugin identifier.
+	// Positional audio information is only sent to users who share
+	// identical plugin contexts.
+	//
+	// This value is not transmitted to clients.
+	optional bytes plugin_context = 12;
+	// The user's plugin-specific identity.
+	// This value is not transmitted to clients.
+	optional string plugin_identity = 13;
+	// User comment if it is less than 128 bytes.
+	optional string comment = 14;
+	// The hash of the user certificate.
+	optional string hash = 15;
+	// SHA1 hash of the user comment if it 128 bytes or more.
+	optional bytes comment_hash = 16;
+	// SHA1 hash of the user picture if it 128 bytes or more.
+	optional bytes texture_hash = 17;
+	// True if the user is a priority speaker.
+	optional bool priority_speaker = 18;
+	// True if the user is currently recording.
+	optional bool recording = 19;
+	// A list of temporary access tokens to be respected when processing this request.
+	repeated string temporary_access_tokens = 20;
+	// A list of channels the user wants to start listening to.
+	repeated uint32 listening_channel_add = 21;
+	// a list of channels the user does no longer want to listen to.
+	repeated uint32 listening_channel_remove = 22;
+	// A list of volume adjustments the user has applied to listeners
+	repeated VolumeAdjustment listening_volume_adjustment = 23;
+}
+
+// Relays information on the bans. The client may send the BanList message to
+// either modify the list of bans or query them from the server. The server
+// sends this list only after a client queries for it.
+message BanList {
+	message BanEntry {
+		// Banned IP address.
+		required bytes address = 1;
+		// The length of the subnet mask for the ban.
+		required uint32 mask = 2;
+		// User name for identification purposes (does not affect the ban).
+		optional string name = 3;
+		// The certificate hash of the banned user.
+		optional string hash = 4;
+		// Reason for the ban (does not affect the ban).
+		optional string reason = 5;
+		// Ban start time.
+		optional string start = 6;
+		// Ban duration in seconds.
+		optional uint32 duration = 7;
+	}
+	// List of ban entries currently in place.
+	repeated BanEntry bans = 1;
+	// True if the server should return the list, false if it should replace old
+	// ban list with the one provided.
+	optional bool query = 2 [default = false];
+}
+
+// Used to send and broadcast text messages.
+message TextMessage {
+	// The message sender, identified by its session.
+	optional uint32 actor = 1;
+	// Target users for the message, identified by their session.
+	repeated uint32 session = 2;
+	// The channels to which the message is sent, identified by their
+	// channel_ids.
+	repeated uint32 channel_id = 3;
+	// The root channels when sending message recursively to several channels,
+	// identified by their channel_ids.
+	repeated uint32 tree_id = 4;
+	// The UTF-8 encoded message. May be HTML if the server allows.
+	required string message = 5;
+	// Files attached to this message, held in the server's file store. Only set between peers that
+	// advertised FEATURE_FILE_TRANSFER.
+	//
+	// The `message` field must always carry human-readable fallback text (and, for images, an inline
+	// thumbnail data-URI) so that clients which do not understand this field still see something
+	// sensible.
+	//
+	// The server MUST discard whatever the sender put here and re-populate each entry from its own
+	// authoritative metadata, having verified that the file exists, has not expired, and that the
+	// sender is permitted to reference it. Relaying client-supplied FileRefs verbatim would let any
+	// user fabricate an attachment attributed to anyone else. Note that declaring this field removed
+	// the protection that used to come free from DiscardUnknownFields, so a server that does not
+	// implement file transfer MUST clear it rather than ignore it.
+	//
+	// The server MUST also bound this field: at most 16 entries, and their encoded size counted against
+	// the same limit as `message`. Server::isTextAllowed inspects only `message`, so without an
+	// explicit bound a small text message carrying megabytes of attachment metadata would be fanned out
+	// to every user in the channel tree.
+	repeated FileRef attachments = 6;
+}
+
+message PermissionDenied {
+	enum DenyType {
+		// Operation denied for other reason, see reason field.
+		Text = 0;
+		// Permissions were denied.
+		Permission = 1;
+		// Cannot modify SuperUser.
+		SuperUser = 2;
+		// Invalid channel name.
+		ChannelName = 3;
+		// Text message too long.
+		TextTooLong = 4;
+		// The flux capacitor was spelled wrong.
+		H9K = 5;
+		// Operation not permitted in temporary channel.
+		TemporaryChannel = 6;
+		// Operation requires certificate.
+		MissingCertificate = 7;
+		// Invalid username.
+		UserName = 8;
+		// Channel is full.
+		ChannelFull = 9;
+		// Channels are nested too deeply.
+		NestingLimit = 10;
+		// Maximum channel count reached.
+		ChannelCountLimit = 11;
+		// Amount of listener objects for this channel has been reached
+		ChannelListenerLimit = 12;
+		// Amount of listener proxies for the user has been reached
+		UserListenerLimit = 13;
+	}
+	// The denied permission when type is Permission.
+	optional uint32 permission = 1;
+	// channel_id for the channel where the permission was denied when type is
+	// Permission.
+	optional uint32 channel_id = 2;
+	// The user who was denied permissions, identified by session.
+	optional uint32 session = 3;
+	// Textual reason for the denial.
+	optional string reason = 4;
+	// Type of the denial.
+	optional DenyType type = 5;
+	// The name that is invalid when type is UserName.
+	optional string name = 6;
+}
+
+message ACL {
+	message ChanGroup {
+		// Name of the channel group, UTF-8 encoded.
+		required string name = 1;
+		// True if the group has been inherited from the parent (Read only).
+		optional bool inherited = 2 [default = true];
+		// True if the group members are inherited.
+		optional bool inherit = 3 [default = true];
+		// True if the group can be inherited by sub channels.
+		optional bool inheritable = 4 [default = true];
+		// Users explicitly included in this group, identified by user_id.
+		repeated uint32 add = 5;
+		// Users explicitly removed from this group in this channel if the group
+		// has been inherited, identified by user_id.
+		repeated uint32 remove = 6;
+		// Users inherited, identified by user_id.
+		repeated uint32 inherited_members = 7;
+	}
+	message ChanACL {
+		// True if this ACL applies to the current channel.
+		optional bool apply_here = 1 [default = true];
+		// True if this ACL applies to the sub channels.
+		optional bool apply_subs = 2 [default = true];
+		// True if the ACL has been inherited from the parent.
+		optional bool inherited = 3 [default = true];
+		// ID of the user that is affected by this ACL.
+		optional uint32 user_id = 4;
+		// ID of the group that is affected by this ACL.
+		optional string group = 5;
+		// Bit flag field of the permissions granted by this ACL.
+		optional uint32 grant = 6;
+		// Bit flag field of the permissions denied by this ACL.
+		optional uint32 deny = 7;
+	}
+	// Channel ID of the channel this message affects.
+	required uint32 channel_id = 1;
+	// True if the channel inherits its parent's ACLs.
+	optional bool inherit_acls = 2 [default = true];
+	// User group specifications.
+	repeated ChanGroup groups = 3;
+	// ACL specifications.
+	repeated ChanACL acls = 4;
+	// True if the message is a query for ACLs instead of setting them.
+	optional bool query = 5 [default = false];
+}
+
+// Client may use this message to refresh its registered user information. The
+// client should fill the IDs or Names of the users it wants to refresh. The
+// server fills the missing parts and sends the message back.
+message QueryUsers {
+	// user_ids.
+	repeated uint32 ids = 1;
+	// User names in the same order as ids.
+	repeated string names = 2;
+}
+
+// Used to initialize and resync the UDP encryption. Either side may request a
+// resync by sending the message without any values filled. The resync is
+// performed by sending the message with only the client or server nonce
+// filled.
+message CryptSetup {
+	// Encryption key.
+	optional bytes key = 1;
+	// Client nonce.
+	optional bytes client_nonce = 2;
+	// Server nonce.
+	optional bytes server_nonce = 3;
+}
+
+// Used to add or remove custom context menu item on client-side. 
+message ContextActionModify {
+	enum Context {
+		// Action is applicable to the server.
+		Server = 0x01;
+		// Action can target a Channel.
+		Channel = 0x02;
+		// Action can target a User.
+		User = 0x04;
+	}
+	enum Operation {
+		Add = 0;
+		Remove = 1;
+	}
+	// The action identifier. Used later to initiate an action.
+	required string action = 1;
+	// The display name of the action.
+	optional string text = 2;
+	// Context bit flags defining where the action should be displayed. 
+	// Flags can be OR-ed to combine different types.
+	optional uint32 context = 3;
+	// Choose either to add or to remove the context action.
+	// Note: This field only exists after Mumble 1.2.4-beta1 release.
+	//       The message will be recognized as Add regardless of this field 
+	//       before said release.
+	optional Operation operation = 4;
+}
+
+// Sent by the client when it wants to initiate a Context action.
+message ContextAction {
+	// The target User for the action, identified by session.
+	optional uint32 session = 1;
+	// The target Channel for the action, identified by channel_id.
+	optional uint32 channel_id = 2;
+	// The action that should be executed.
+	required string action = 3;
+}
+
+// Lists the registered users.
+message UserList {
+	message User {
+		// Registered user ID.
+		required uint32 user_id = 1;
+		// Registered user name.
+		optional string name = 2;
+		optional string last_seen = 3;
+		optional uint32 last_channel = 4;
+	}
+	// A list of registered users.
+	repeated User users = 1;
+}
+
+// Sent by the client when it wants to register or clear whisper targets.
+//
+// Note: The first available target ID is 1 as 0 is reserved for normal
+// talking. Maximum target ID is 30.
+message VoiceTarget {
+	message Target {
+		// Users that are included as targets.
+		repeated uint32 session = 1;
+		// Channel that is included as a target.
+		optional uint32 channel_id = 2;
+		// ACL group that is included as a target.
+		optional string group = 3;
+		// True if the voice should follow links from the specified channel.
+		optional bool links = 4 [default = false];
+		// True if the voice should also be sent to children of the specific
+		// channel.
+		optional bool children = 5 [default = false];
+	}
+	// Voice target ID.
+	optional uint32 id = 1;
+	// The receivers that this voice target includes.
+	repeated Target targets = 2;
+}
+
+// Sent by the client when it wants permissions for a certain channel. Sent by
+// the server when it replies to the query or wants the user to resync all
+// channel permissions.
+message PermissionQuery {
+	// channel_id of the channel for which the permissions are queried.
+	optional uint32 channel_id = 1;
+	// Channel permissions.
+	optional uint32 permissions = 2;
+	// True if the client should drop its current permission information for all
+	// channels.
+	optional bool flush = 3 [default = false];
+}
+
+// Sent by the server to notify the users of the version of the CELT codec they
+// should use. This may change during the connection when new users join.
+message CodecVersion {
+	// The version of the CELT Alpha codec.
+	required int32 alpha = 1;
+	// The version of the CELT Beta codec.
+	required int32 beta = 2;
+	// True if the user should prefer Alpha over Beta.
+	required bool prefer_alpha = 3 [default = true];
+	optional bool opus = 4 [default = false];
+}
+
+// Used to communicate user stats between the server and clients.
+message UserStats {
+	message Stats {
+		// The amount of good packets received.
+		optional uint32 good = 1;
+		// The amount of late packets received.
+		optional uint32 late = 2;
+		// The amount of packets never received.
+		optional uint32 lost = 3;
+		// The amount of nonce resyncs.
+		optional uint32 resync = 4;
+	}
+
+	message RollingStats {
+		// Rolling packet statistics time window as defined on the server.
+		optional uint32 time_window = 1;
+		// Rolling packet statistics for packets received from the client.
+		optional Stats from_client = 2;
+		// Rolling packet statistics for packets sent by the server.
+		optional Stats from_server = 3;
+	}
+
+	// User whose stats these are.
+	optional uint32 session = 1;
+	// True if the message contains only mutable stats (packets, ping).
+	optional bool stats_only = 2 [default = false];
+	// Full user certificate chain of the user certificate in DER format.
+	repeated bytes certificates = 3;
+	// Packet statistics for packets received from the client.
+	optional Stats from_client = 4;
+	// Packet statistics for packets sent by the server.
+	optional Stats from_server = 5;
+
+	// Amount of UDP packets sent.
+	optional uint32 udp_packets = 6;
+	// Amount of TCP packets sent.
+	optional uint32 tcp_packets = 7;
+	// UDP ping average.
+	optional float udp_ping_avg = 8;
+	// UDP ping variance.
+	optional float udp_ping_var = 9;
+	// TCP ping average.
+	optional float tcp_ping_avg = 10;
+	// TCP ping variance.
+	optional float tcp_ping_var = 11;
+
+	// Client version.
+	optional Version version = 12;
+	// A list of CELT bitstream version constants supported by the client of this
+	// user.
+	repeated int32 celt_versions = 13;
+	// Client IP address.
+	optional bytes address = 14;
+	// Bandwidth used by this client.
+	optional uint32 bandwidth = 15;
+	// Connection duration.
+	optional uint32 onlinesecs = 16;
+	// Duration since last activity.
+	optional uint32 idlesecs = 17;
+	// True if the user has a strong certificate.
+	optional bool strong_certificate = 18 [default = false];
+	optional bool opus = 19 [default = false];
+
+	// Rolling packet statistics
+	optional RollingStats rolling_stats = 20;
+}
+
+// Used by the client to request binary data from the server. By default large
+// comments or textures are not sent within standard messages but instead the
+// hash is. If the client does not recognize the hash it may request the
+// resource when it needs it. The client does so by sending a RequestBlob
+// message with the correct fields filled with the user sessions or channel_ids
+// it wants to receive. The server replies to this by sending a new
+// UserState/ChannelState message with the resources filled even if they would
+// normally be transmitted as hashes.
+message RequestBlob {
+	// sessions of the requested UserState textures.
+	repeated uint32 session_texture = 1;
+	// sessions of the requested UserState comments.
+	repeated uint32 session_comment = 2;
+	// channel_ids of the requested ChannelState descriptions.
+	repeated uint32 channel_description = 3;
+}
+
+// Sent by the server when it informs the clients on server configuration
+// details.
+message ServerConfig {
+	// The maximum bandwidth the clients should use.
+	optional uint32 max_bandwidth = 1;
+	// Server welcome text.
+	optional string welcome_text = 2;
+	// True if the server allows HTML.
+	optional bool allow_html = 3;
+	// Maximum text message length.
+	optional uint32 message_length = 4;
+	// Maximum image message length.
+	optional uint32 image_message_length = 5;
+	// The maximum number of users allowed on the server.
+	optional uint32 max_users = 6;
+	// Whether using Mumble's recording feature is allowed on the server
+	optional bool recording_allowed = 7;
+	// Optional protocol features this server implements and permits. A feature that is not listed here
+	// is disabled; there is deliberately no separate "enabled" boolean per feature. Absent from every
+	// stock Mumble server and from this fork's releases before it was sent (see Feature for how those
+	// are recognised), which is why the client must construct all video and file UI disabled and enable
+	// it only on receipt of this message.
+	repeated Feature features = 8;
+
+	// The following are only meaningful if FEATURE_VIDEO is advertised. 0 means no limit.
+
+	// Maximum bandwidth in bits per second a single video stream may use. The sender clamps its encoder
+	// to this, and the server clamps VideoState.target_bandwidth to it. The server does not meter the
+	// datagrams themselves.
+	optional uint32 max_video_bandwidth = 9;
+	// Maximum number of users that may share video at once in one channel, counting a user once however
+	// many streams they hold. Enforced when a user starts sharing: a user already sharing may add
+	// streams, and moving into a channel is not refused because of it.
+	optional uint32 max_video_streams_per_channel = 10;
+
+	// The following are only meaningful if FEATURE_FILE_TRANSFER is advertised.
+
+	// Maximum size in bytes of a single uploaded file.
+	optional uint64 max_file_size = 11;
+	// Days an uploaded file is retained before the server deletes it. 0 means files are kept until the
+	// server's total storage quota forces eviction.
+	optional uint32 file_retention_days = 12;
+	// Maximum size in bytes of a single FileTransfer.data chunk the server will accept or send.
+	optional uint32 max_file_chunk_size = 13;
+	// Maximum sustained upload rate in bytes per second per client.
+	optional uint32 max_file_upload_rate = 14;
+}
+
+// Sent by the server to inform the clients of suggested client configuration
+// specified by the server administrator.
+message SuggestConfig {
+	// Suggested client version in the legacy format.
+	optional uint32 version_v1 = 1;
+	// Suggested client version in the new format.
+	// Necessary since patch level may exceed 255. (See https://github.com/mumble-voip/mumble/issues/5827)
+	optional uint64 version_v2 = 4;
+
+	// True if the administrator suggests positional audio to be used on this
+	// server.
+	optional bool positional = 2;
+	// True if the administrator suggests push to talk to be used on this server.
+	optional bool push_to_talk = 3;
+}
+
+// Used to send plugin messages between clients
+message PluginDataTransmission {
+	// The session ID of the client this message was sent from
+	optional uint32 senderSession = 1;
+	// The session IDs of the clients that should receive this message
+	repeated uint32 receiverSessions = 2 [packed = true];
+	// The data that is sent
+	optional bytes data = 3;
+	// The ID of the sent data. This will be used by plugins to check whether they will
+	// process it or not
+	optional string dataID = 4;
+}
+
+// Announces, updates or terminates one video stream. Sent by the streaming client to the server and
+// relayed by the server to those clients in the affected channel that advertised FEATURE_VIDEO.
+//
+// Webcam and screen sharing are the same mechanism; they differ only in `source_kind`. The frame data
+// itself travels out of band as MumbleUDP.Video packets, which the server relays without inspecting.
+//
+// This message is the authoritative stream lifecycle. There is no per-stream state in UserState, so a
+// client that joins mid-stream has to be told about streams already running. The server MUST therefore
+// replay the current VideoState for each streaming user, in the same way it replays UserState -- but
+// note that it must do so *after* ServerConfig, not during the ServerSync burst, because until the
+// client has seen ServerConfig it does not know the server supports video at all.
+// Server::sendActiveVideoStreams does this at the end of authentication, after ServerSync and
+// ServerConfig, and skips streams the new client would not be allowed to subscribe to.
+//
+// Subscription is not authorisation. The server MUST reject a VideoSubscribe unless the subscriber
+// would be permitted to enter the streaming user's current channel, MUST re-evaluate that when either
+// party moves, and MUST tear subscriptions down when the ACL cache is cleared. Sessions are visible to
+// every client through the user list, including for channels they cannot enter, so a subscription that
+// is honoured on the strength of a session id alone would relay a screen share to someone with no
+// access to the channel it is being shared in.
+message VideoState {
+	// The codec used for the payloads of the corresponding MumbleUDP.Video packets.
+	enum Codec {
+		// Not a codec. This file is proto2, where enums are closed: a value the parser does not know is
+		// moved to the unknown-field set and the getter returns enumerator 0. Enumerator 0 must
+		// therefore be inert, or a peer adding a codec later would have its streams silently decoded as
+		// whatever happened to be first. A receiver MUST drop a stream whose codec resolves to this.
+		CODEC_UNKNOWN = 0;
+		// Independently coded rectangular tiles, each a complete JPEG or PNG. Decodable with QImage
+		// alone, so it requires no new library on either side. Suitable for screen content; poor for
+		// camera content.
+		TiledImage = 1;
+		// libvpx, whole-frame. Cameras send VP8; screen shares send VP9 when no hardware H.264 encoder is
+		// available. AV1 is reserved.
+		VP8 = 2;
+		VP9 = 3;
+		AV1 = 4;
+		// Opus-encoded PCM, not a picture. Carried as a video stream so a screen share's accompanying
+		// audio can ride the same per-sender subscribe/route/crypto path as the picture it goes with,
+		// instead of the voice pipeline, which has no room for a second stream per session. A receiver
+		// seeing this value must not attempt to decode units as an image, and a stream announced with
+		// it produces no picture surface - only x/y/width/height are meaningless here and MUST be
+		// ignored.
+		OpusAudio = 5;
+		// H.264 Annex B, one access unit per frame, from a hardware encoder. Whole-frame like VP8, but a
+		// frame may span several units: unit i of n carries x = i and y = n (there is no tile position),
+		// and the receiver joins all n before decoding. No B-frames. A client too old to know this value
+		// reads CODEC_UNKNOWN and drops the stream, as required above.
+		H264 = 6;
+	}
+
+	// What is being captured.
+	enum SourceKind {
+		// Inert enumerator 0, for the reason given on Codec above. A receiver MUST treat a stream whose
+		// source kind resolves to this as unknown rather than assuming a camera.
+		SOURCE_UNKNOWN = 0;
+		// A camera attached to the sending machine.
+		Camera = 1;
+		// An entire display.
+		Display = 2;
+		// A single window.
+		Window = 3;
+		// A single application, possibly spanning several windows. Only expressible on some platforms.
+		Application = 4;
+	}
+
+	// Session of the streaming client. Ignored when sent client to server; always set by the server
+	// when relaying.
+	optional uint32 session = 1;
+	// Identifies this stream within the sender. Incremented on every restart and on every change to
+	// codec, source_kind, width or height, so that receivers can discard stale fragments without having
+	// to inspect them. 0 is a valid id. A sender may hold several streams open at once, for instance a
+	// camera and a display.
+	optional uint32 stream_id = 2;
+	// False means the stream has ended; all other fields are then ignored. This, and not any flag on
+	// the UDP packets, is what terminates a stream, because only this message is delivered reliably.
+	// Defaults to false so that a truncated or empty VideoState cannot read as "start streaming".
+	// Activation must be explicit.
+	optional bool active = 3 [default = false];
+
+	// Both default to their inert enumerator rather than to a real value, so that a sender which omits
+	// them - or a receiver which does not know the value sent - resolves to "unknown" and drops the
+	// stream, instead of guessing a codec and feeding foreign bytes to a decoder.
+	optional Codec codec = 4 [default = CODEC_UNKNOWN];
+	optional SourceKind source_kind = 5 [default = SOURCE_UNKNOWN];
+	// Human readable description of the source (camera name, monitor name, window title, application
+	// name). Purely informational. Subject to the server's ServerConfig.message_length limit.
+	optional string source_name = 6;
+
+	// Nominal frame dimensions in pixels. Advisory: receivers must still cope with the decoder
+	// reporting different dimensions mid-stream.
+	optional uint32 width = 7;
+	optional uint32 height = 8;
+	// Nominal frames per second the sender intends to produce. Advisory.
+	optional uint32 max_framerate = 9;
+	// Bitrate in bits per second the sender intends to use. The server clamps this to
+	// ServerConfig.max_video_bandwidth and relays the clamped value.
+	optional uint32 target_bandwidth = 10;
+}
+
+// Sent by a receiving client to tell the server which streams to forward to it. The server forwards
+// MumbleUDP.Video packets only to sessions holding an active subscription; video is never broadcast to
+// a whole channel the way audio is, because a single stream fanned out to a large channel would
+// multiply the server's egress by the channel size and there is no natural silence period to bound the
+// cost.
+//
+// The same message also carries the receiver's feedback for the sender's rate control, which the
+// server relays to the sender.
+message VideoSubscribe {
+	// Session of the stream's sender.
+	optional uint32 session = 1;
+	// Stream id being subscribed to, as announced in VideoState.stream_id.
+	optional uint32 stream_id = 2;
+	// False unsubscribes.
+	// Defaults to false for the same reason as VideoState.active: this message also carries periodic
+	// receiver feedback, and a feedback report that happened to omit this field must not be read as a
+	// fresh subscription.
+	optional bool subscribe = 3 [default = false];
+	// Ask the sender to emit a keyframe or full refresh as soon as possible. Set on initial subscribe
+	// and after unrecoverable loss. Relayed to the sender, rate-limited by the server: unbounded
+	// keyframe requests from many subscribers are an amplification attack on the sender's uplink. This
+	// is the fallback for loss that MumbleUDP.VideoNack, which re-sends individual lost fragments, could
+	// not repair; there is no FEC.
+	optional bool request_keyframe = 4;
+
+	// Fraction of coded units the receiver failed to reassemble since its last report, in parts per
+	// thousand.
+	optional uint32 observed_loss_permille = 5;
+	// Highest fully reassembled frame number the receiver has decoded.
+	optional uint64 last_complete_frame = 6;
+	// Receiver's preferred ceiling in bits per second, for instance because it is displaying the stream
+	// as a small thumbnail. 0 means no preference.
+	optional uint32 preferred_bandwidth = 7;
+}
+
+// Describes a file held in the server's file store. Announced inside TextMessage and returned by the
+// server during transfers.
+message FileRef {
+	// Server-assigned identifier, unique within the virtual server. Opaque to clients.
+	//
+	// MUST be at least 128 bits from a cryptographically secure random source, hex or base64 encoded.
+	// "Opaque" is not a security property: a database row id or the content hash would let anyone
+	// enumerate or guess every file on the server. Unguessability is defence in depth only - the server
+	// MUST still re-check permissions on every DOWNLOAD_REQUEST (see below), because an id travels in
+	// relayed TextMessages and outlives the sender's access to the channel.
+	optional string file_id = 1;
+	// File name as supplied by the uploader, for display.
+	//
+	// The server MUST normalise this before storing it and before relaying it, and MUST NOT rely on
+	// clients to do so: reduce to a bare basename, reject absolute paths and any path separator, strip
+	// C0/C1 control characters and Unicode bidi overrides (which turn "invoice<U+202E>gpj.exe" into
+	// something that renders as "invoiceexe.jpg"), reject the Windows reserved device names and trailing
+	// dots or spaces, require valid UTF-8, and cap the result at 255 bytes. Clients SHOULD sanitise
+	// again before using it as a path component, but the server is the enforcement point. Putting that
+	// obligation on every third-party client instead would mint one vulnerability per implementation.
+	optional string name = 2;
+	// Size of the file in bytes.
+	optional uint64 size = 3;
+	// SHA-256 over the file's contents, used for de-duplication and integrity checking.
+	optional bytes sha256 = 4;
+	// IANA media type claimed by the uploader. Advisory; never trusted.
+	// Content type. The server MUST overwrite whatever the client claimed with a value derived from the
+	// stored bytes and drawn from a fixed allowlist, in the same way it overwrites TextMessage.actor;
+	// an unrecognised type becomes application/octet-stream. image/svg+xml and any text/html variant
+	// MUST NOT be on that allowlist: both are script and external-fetch vectors when rendered in a chat
+	// log. Receivers MUST NOT content-sniff, and MUST treat anything that is not a known-safe image
+	// type as an opaque download that is never opened automatically.
+	optional string mime_type = 5;
+	// Session of the uploading user, if that user is still connected.
+	optional uint32 uploader_session = 6;
+	// Name of the uploading user, retained after that user disconnects.
+	optional string uploader_name = 7;
+	// Seconds since the UNIX epoch at which the server will delete this file. Derived from
+	// ServerConfig.file_retention_days.
+	optional uint64 expires_at = 8;
+}
+
+// Carries the whole file upload and download state machine. Transfers are chunked because a single
+// control message is capped at 0x7fffff bytes (see Connection.cpp) and because the control channel is
+// head-of-line blocking for clients whose audio is tunnelled over TCP.
+message FileTransfer {
+	enum Action {
+		// Not an action. proto2 enums are closed, so a value the receiver does not know reads back as
+		// enumerator 0. If that were UPLOAD_OFFER, a peer sending an action added in a later version
+		// would drive an older server into the *upload* state machine with an empty FileRef rather than
+		// being ignored. A receiver MUST reply ABORT with REJECT_UNSPECIFIED when it resolves to this.
+		ACTION_UNSPECIFIED = 0;
+		// Client to server: announce an upload. `file` carries name, size and mime_type.
+		UPLOAD_OFFER = 1;
+		// Server to client: accepted. `offset` states the first byte the server wants, which is non-zero
+		// only when this client is resuming its own interrupted transfer. It MUST NOT reveal that the
+		// server already holds matching content: de-duplication happens in the storage layer after the
+		// bytes have been received and hashed, never in this reply. Otherwise a non-zero offset is an
+		// oracle for "does this exact file exist anywhere on the server", and a peer could claim a
+		// file_id for content it never possessed and never had permission to read.
+		UPLOAD_ACCEPT = 2;
+		// Either direction: one chunk of file data at `offset`.
+		DATA = 3;
+		// Server to client: all bytes received and the SHA-256 computed by the server. `file` is fully
+		// populated, including file_id and expires_at.
+		UPLOAD_DONE = 4;
+		// Client to server: request the bytes of a file. `file.file_id` is set.
+		DOWNLOAD_REQUEST = 5;
+		// Server to client: accepted, DATA messages follow. `file` is fully populated.
+		DOWNLOAD_ACCEPT = 6;
+		// Server to client: the final DATA for this transfer_id has been sent.
+		DOWNLOAD_DONE = 7;
+		// Either direction: abort. `reject_reason` says why.
+		ABORT = 8;
+		// Client to server: delete a stored file. Permitted for the uploader, and for a user holding the
+		// ResetUserContent permission on the file's channel. Defined now rather than later because
+		// adding an action after release would hit the enumerator-0 problem described above on every
+		// already-deployed peer.
+		DELETE_REQUEST = 9;
+		// Server to client: the file is gone. Also broadcast to the channel so that clients can drop it
+		// from any TextMessage they are still displaying.
+		DELETE_DONE = 10;
+	}
+
+	enum RejectReason {
+		// Inert enumerator 0, for the reason given on Action above. A receiver that resolves a reason to
+		// this MUST treat the transfer as failed for an unspecified reason - never as success, which is
+		// what a `NONE = 0` would have meant to a peer that did not know a newer reason code.
+		REJECT_UNSPECIFIED = 0;
+		PERMISSION_DENIED = 1;
+		TOO_LARGE = 2;
+		QUOTA_EXCEEDED = 3;
+		RATE_LIMITED = 4;
+		UNKNOWN_FILE = 5;
+		EXPIRED = 6;
+		HASH_MISMATCH = 7;
+		STORAGE_ERROR = 8;
+		DISABLED = 9;
+		// The client wrote outside the region the server accepted; see FileTransfer.offset.
+		BAD_OFFSET = 10;
+	}
+
+	optional Action action = 1;
+	// Identifies the transfer for its lifetime. Chosen by the client, which initiates both uploads and
+	// downloads, and unique per connection.
+	optional uint32 transfer_id = 2;
+	optional FileRef file = 3;
+	// Byte offset of `data` within the file. Present on every DATA message so that resumption is
+	// explicit rather than implied by ordering.
+	//
+	// This does not license arbitrary random access. The server MUST reject, with BAD_OFFSET, any DATA
+	// whose offset is not the current high-water mark of the transfer, other than the single resume
+	// point it named in UPLOAD_ACCEPT, and MUST reject any write where offset + len(data) exceeds both
+	// the offered size and ServerConfig.max_file_size. It MUST NOT preallocate from the client-declared
+	// size. Honouring an arbitrary offset would let a one-byte upload seek to 2^63 and create an
+	// exabyte-scale sparse file, which costs an attacker nothing and fills the volume the server's own
+	// database lives on.
+	optional uint64 offset = 4;
+	// Chunk payload. Must not exceed ServerConfig.max_file_chunk_size.
+	optional bytes data = 5;
+	// Channel the file is being shared into. Used for the upload ACL check and to scope who may later
+	// download it.
+	//
+	// Also required on DOWNLOAD_REQUEST. The server MUST resolve file_id to the channel the file was
+	// stored in and re-evaluate the requester's permission on it for every request, rather than
+	// treating possession of a file_id as authorisation: Mumble ACLs are revocable at runtime, and a
+	// file_id reaches everyone a TextMessage was relayed to, including users who later lose access.
+	optional uint32 channel_id = 6;
+	optional RejectReason reject_reason = 7 [default = REJECT_UNSPECIFIED];
+	// Optional human-readable detail accompanying ABORT.
+	optional string reason_text = 8;
+}

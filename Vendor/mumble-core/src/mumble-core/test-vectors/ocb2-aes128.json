@@ -1,0 +1,85 @@
+{
+  "description": "CryptStateOCB2::ocb_encrypt (OCB2-AES128 with the XEX* countermeasure of eprint 2019/311 section 9 enabled). The tag is the full 16 bytes; datagrams carry only its first 3.",
+  "cases": [
+    {
+      "name": "draft-krovetz-ocb-00, empty",
+      "key": "000102030405060708090a0b0c0d0e0f",
+      "nonce": "000102030405060708090a0b0c0d0e0f",
+      "plaintext": "",
+      "ciphertext": "",
+      "tag": "bf3108130773ad5ec70ec69e7875a7b0"
+    },
+    {
+      "name": "draft-krovetz-ocb-00, 40 bytes",
+      "key": "000102030405060708090a0b0c0d0e0f",
+      "nonce": "000102030405060708090a0b0c0d0e0f",
+      "plaintext": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627",
+      "ciphertext": "f75d6bc8b4dc8d66b836a2b08b32a6369f1cd3c5228d79fd6c267f5f6aa7b231c7dfb9d59951ae9c",
+      "tag": "9db0cdf880f73e3e10d4eb3217766688"
+    },
+    {
+      "name": "1 byte",
+      "key": "404142434445464748494a4b4c4d4e4f",
+      "nonce": "808182838485868788898a8b8c8d8e8f",
+      "plaintext": "5a",
+      "ciphertext": "29",
+      "tag": "0331b6b07b395ad1c16b7bca127cfe60"
+    },
+    {
+      "name": "15 bytes",
+      "key": "404142434445464748494a4b4c4d4e4f",
+      "nonce": "808182838485868788898a8b8c8d8e8f",
+      "plaintext": "101112131415161718191a1b1c1d1e",
+      "ciphertext": "ce53037d2aa153710e9d76ef7a1ab1",
+      "tag": "3e127777ca7ee3c12a5eacf5229a11af"
+    },
+    {
+      "name": "one full block",
+      "key": "404142434445464748494a4b4c4d4e4f",
+      "nonce": "808182838485868788898a8b8c8d8e8f",
+      "plaintext": "202122232425262728292a2b2c2d2e2f",
+      "ciphertext": "b561dd7cb598ef4efa4c1b54dac7bb6e",
+      "tag": "c67a1d3b517d9be5be7c08f945b86463"
+    },
+    {
+      "name": "17 bytes",
+      "key": "404142434445464748494a4b4c4d4e4f",
+      "nonce": "808182838485868788898a8b8c8d8e8f",
+      "plaintext": "303132333435363738393a3b3c3d3e3f40",
+      "ciphertext": "0383a5062791f417fccb6c7c615b2bf077",
+      "tag": "417cad268f474eeaa93183267536401a"
+    },
+    {
+      "name": "two full blocks",
+      "key": "404142434445464748494a4b4c4d4e4f",
+      "nonce": "808182838485868788898a8b8c8d8e8f",
+      "plaintext": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+      "ciphertext": "69c14d0e7256646d95a976a2d419115f90823fef95d827aa175aeb4703bd0035",
+      "tag": "e231e34904cea311870063c0255c903a"
+    },
+    {
+      "name": "100 bytes",
+      "key": "404142434445464748494a4b4c4d4e4f",
+      "nonce": "808182838485868788898a8b8c8d8e8f",
+      "plaintext": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3",
+      "ciphertext": "a34f9f611c640e384f07460416e3724e7a38a77e5165f6c8f203f3430ea93c4b45c625de0d1ed26cc7aa68d2ab26dabd119a785eb03516b4e7511db602913aebd0cc80c33299d0bf2bec5b52d13b8830a63682c05b0c4ca3b3ba8cc3b9a5315c74e0da61",
+      "tag": "507921da533a62cf208895ae015f364d"
+    },
+    {
+      "name": "XEX* countermeasure: zero second-to-last block",
+      "key": "404142434445464748494a4b4c4d4e4f",
+      "nonce": "808182838485868788898a8b8c8d8e8f",
+      "plaintext": "00000000000000000000000000000080707172737475767778797a7b7c7d7e7f",
+      "ciphertext": "79c5628d66b0616ec17055b6f6d785bf80922fff85c837ba074afb5713ad1025",
+      "tag": "95fc6ed1bc1733217379234646015483"
+    },
+    {
+      "name": "digital silence, 48 zero bytes",
+      "key": "404142434445464748494a4b4c4d4e4f",
+      "nonce": "808182838485868788898a8b8c8d8e8f",
+      "plaintext": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "ciphertext": "6ef884ae58863bc481cd1654a7e8ec998d804f2273996807a761a8af79dd52ca677574ecf7cd502e4e27369c188823aa",
+      "tag": "34b7138fda3884165c256ce8ad94b2cd"
+    }
+  ]
+}

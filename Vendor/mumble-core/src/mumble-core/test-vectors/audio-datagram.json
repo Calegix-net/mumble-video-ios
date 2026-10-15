@@ -1,0 +1,35 @@
+{
+  "description": "Audio UDP datagrams as the client and server send them: channel byte 0x00, then CryptStateOCB2::encrypt's output (low byte of the IV, 3 tag bytes, ciphertext). encryptIv is the IV before the first packet; each packet increments it first, as a little-endian counter.",
+  "cases": [
+    {
+      "name": "fresh IV",
+      "key": "8f1c2e4d5a6b7c8d9eafb0c1d2e3f405",
+      "encryptIv": "00112233445566778899aabbccddeeff",
+      "plaintexts": [
+        "01020304050607",
+        "1112131415161718191a1b1c1d1e1f20",
+        "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c"
+      ],
+      "datagrams": [
+        "0001535909f33902a0906719",
+        "000230375f0d8c2947035c457519083735a88c0737",
+        "000329e36acd46bbee179cede39034478fde05f7809664fa7de44b256b0d6b8dd18f7a3c75997fe1df735ebdbe98ea963efbffd933223e44e4ecd85a3f76958b72"
+      ]
+    },
+    {
+      "name": "first byte about to wrap",
+      "key": "8f1c2e4d5a6b7c8d9eafb0c1d2e3f405",
+      "encryptIv": "fe112233445566778899aabbccddeeff",
+      "plaintexts": [
+        "01020304050607",
+        "1112131415161718191a1b1c1d1e1f20",
+        "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c"
+      ],
+      "datagrams": [
+        "00ffff4fee4d5ce22058ede9",
+        "00005cf86ac5d32371946afe6fc9433c8bde05a630",
+        "000168d4847bd98b3fa0ca71380a6121337122ad71c41a87e567dc379cb44e225042ae9e61de650fc3d037d77a969fa2e052a4c816888cc1e2eda0faaa9ad75ea5"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,216 @@
+// Copyright The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
+
+syntax = "proto3";
+
+package MumbleUDP;
+
+option optimize_for = SPEED;
+
+message Audio {
+	oneof Header {
+		// When this audio is sent by the client to the server, this is set to the target of the audio data. This target
+		// is a number in the range [0, 2^{32} - 1], where 0 means "normal talking", 2^{5} - 1 means "server loopback"
+		// and all other targets are understood as shout/whisper targets that have previously been registered via a
+		// VoiceTarget message (via TCP).
+		uint32 target  = 1;	
+		// When this audio is sent by the server to the client, this indicates the context in which the audio has been sent.
+		// 0: Normal speech
+		// 1: Shout to channel
+		// 2: Whisper to user
+		// 3: Received via channel listener
+		uint32 context = 2;
+	};
+
+	// The session of the client (sender) this audio was originally sent from. This field is not required when sending
+	// audio to the server, but will always be set when receiving audio from the server.
+	uint32 sender_session = 3;
+
+	// The number of the first contained audio frame (indicating the position of that frame in the overall audio stream)
+	uint64 frame_number = 4;
+
+	// The actual voice data payload in the Opus format.
+	bytes opus_data = 5;
+
+	// Optional positional data indicating the speaker's position in a virtual world (in meters). This "list" is really
+	// expected to be an array of size 3 containing the X, Y and Z coordinates of the position (in that order).
+	repeated float positional_data = 6;
+
+	// A volume adjustment determined by the server for this audio packet. It is up to the client to apply this adjustment to
+	// the resulting audio (or not). Note: A value of 0 means that this field is unset.
+	float volume_adjustment = 7;
+
+	// Note that we skip the field indices up to (including) 15 in order to have them available for future extensions of the
+	// protocol with fields that are encountered very often. The reason is that all field indices <= 15 require only a single
+	// byte of encoding overhead, whereas the once > 15 require (at least) two bytes. The reason lies in the Protobuf encoding
+	// scheme that uses 1 bit for a varint continuation flag, 3 bit to encode a field's type and the remaining 4 bit of the
+	// first byte are thus available for the field index. Therefore the first 2^4 = 16 field indices (aka values 0 to 15) can
+	// be encoded using only a single byte. For details see https://developers.google.com/protocol-buffers/docs/encoding
+
+	// A flag indicating whether this audio packet represents the end of transmission for the current audio stream
+	bool is_terminator = 16;
+}
+
+/**
+ * Ping message for checking UDP connectivity (and roundtrip ping) and potentially obtaining further server
+ * details (e.g. version).
+ */
+message Ping {
+	// Timestamp as encoded by the client. A server is not supposed to attempt to decode or modify this field. Therefore,
+	// clients may choose an arbitrary format for this timestamp (as long as it fits into a uint64 field).
+	uint64 timestamp = 1;
+
+	// A flag set by the sending client, if it wants to obtain additional information about the server.
+	bool request_extended_information = 2;
+
+
+	// Below are the fields for the "additional information" that are filled out by the server on request.
+
+	// The version of the server in the new version format.
+	// The new protobuf Ping packet introduced with 1.5 drops support for the legacy version format
+	// since both server and client have to support this new format.
+	// (See https://github.com/mumble-voip/mumble/issues/5827)
+	uint64 server_version_v2 = 3;
+
+	// The amount of users currently connected to the server
+	uint32 user_count = 4;
+
+	// The maximum amount of users permitted on this server
+	uint32 max_user_count = 5;
+
+	// The maximum bandwidth each user is allowed to use for sending audio to the server
+	uint32 max_bandwidth_per_user = 6;
+}
+
+/**
+ * One MTU-sized fragment of a video stream, whether that stream is a camera or a captured screen. This
+ * is what rides the UDP socket, on the video channel with a crypt state of its own (see VideoTransport.h).
+ * It is never tunnelled over TCP: a client whose connection has fallen back to the TCP UDPTunnel stops
+ * sending video, and the server does not relay it to anyone without a UDP path.
+ *
+ * The whole datagram must fit inside Mumble::Protocol::MAX_VIDEO_DATAGRAM_SIZE (1200 bytes): an 8-byte
+ * header in the clear (channel byte, 32-bit sequence number, 3 bytes of the OCB2 tag), then, encrypted,
+ * 1 message type byte plus this Protobuf. The sender must additionally leave headroom for the server to
+ * stamp sender_session. Do not hardcode the resulting payload budget: it is whatever remains after a
+ * worst-case encoding of every field below, and it shrinks whenever a field is added. Compute it the way
+ * VideoFragmenter::maxPayloadPerFragment does, by measuring a message with every field at its widest
+ * varint. At the time of writing that is 1098 bytes, not the round number it is tempting to assume.
+ * Units larger than that are fragmented; at most MAX_VIDEO_FRAGMENTS_PER_UNIT fragments per unit.
+ *
+ * There are deliberately three levels of structure:
+ *   frame_number         one complete update of the source
+ *   unit_id              an independently decodable region within that frame: one tile for TiledImage,
+ *                        0 for whole-frame codecs such as VP8 and VP9, the part's index for an H.264
+ *                        frame split across several units
+ *   fragment_index/count the MTU chopping of a single unit
+ * Losing a fragment therefore costs one unit rather than the whole frame.
+ *
+ * There is no FEC. Lost fragments are retransmitted on request: a receiver names the fragments a unit is
+ * still missing in a VideoNack (below), and the sender re-sends them from a short history. A unit that
+ * still does not reassemble within a short timeout is dropped; its region stays stale until the sender
+ * resends it, either through a periodic refresh or in response to VideoSubscribe.request_keyframe.
+ * Receivers must bound the number of in-flight units per sender and must not allocate based on
+ * fragment_count, which is attacker-controlled.
+ *
+ * The stream's codec, dimensions and source kind are not repeated here; they are carried reliably over
+ * TCP in VideoState. A receiver drops any fragment whose (sender_session, stream_id) pair it has no
+ * subscription for, which is also what makes a mid-stream parameter change safe: the sender allocates
+ * a new stream_id.
+ */
+/**
+ * A request to re-send lost fragments of a video stream (a NACK), on the video channel like the fragments
+ * themselves. UDP rather than the TCP control channel deliberately: under packet loss TCP holds every later
+ * message back until a lost segment is retransmitted - 200 ms at the very least - by which time the frames
+ * waiting on the answer have long been given up on. A lost request costs only itself; the receiver asks
+ * again.
+ *
+ * A receiver sends it to the server naming the stream's sender; the server checks the requester is
+ * subscribed, stamps requester_session, and forwards it to the sender, who re-sends the listed fragments
+ * as ordinary Video datagrams. A server or sender that predates this message drops it as an unknown type.
+ */
+message VideoNack {
+	message Unit {
+		uint64 frame_number = 1;
+		uint32 unit_id = 2;
+		// Bit i set: fragment i is missing. 0 means the whole unit is missing (no fragment of it arrived,
+		// so the receiver cannot know how many it had).
+		fixed64 missing_fragments = 3;
+		// The missing fragments by index, for a unit with more fragments than missing_fragments has bits
+		// (a VP9 keyframe runs to over a hundred). When present it takes precedence over
+		// missing_fragments, which is then 0 so that a sender predating this field re-sends the whole
+		// unit. A server predating it relays it unchanged, as an unknown field.
+		repeated uint32 missing_indices = 4;
+	}
+
+	// Session of the stream's sender.
+	uint32 sender_session = 1;
+	uint32 stream_id = 2;
+	// At most MAX_VIDEO_NACK_UNITS (VideoFragmentation.h); the rest are ignored.
+	repeated Unit units = 3;
+	// Who asked. Set by the server; a client leaves it unset.
+	uint32 requester_session = 4;
+}
+
+message Video {
+	// The session of the client this video was originally sent from. Not set when sending to the
+	// server; always set by the server when relaying.
+	//
+	// A server may stamp it by appending an encoded field-1 varint to the received buffer, since
+	// Protobuf takes the last occurrence of a singular scalar field. That is valid, but it does not make
+	// the relay allocation-free: the server must re-encrypt per recipient using that recipient's OCB2
+	// state, so a copy happens either way. The fragment budget reserves room for a second copy of this
+	// field regardless of which method the server uses.
+	uint32 sender_session = 1;
+
+	// Identifies the stream within the sender. Matches the stream_id announced in the corresponding
+	// VideoState.
+	uint32 stream_id = 2;
+
+	// Monotonically increasing frame counter within the stream, and a sequence number rather than a
+	// timestamp. It is 64 bits and will not wrap in any real session; reassembly orders on it directly
+	// and implements no wrap-around comparison, so a sender MUST NOT restart it within a stream --
+	// allocate a new stream_id instead.
+	uint64 frame_number = 3;
+
+	// Index of the independently decodable unit within this frame.
+	uint32 unit_id = 4;
+
+	// Position of this fragment within its unit, and how many fragments the unit was split into. A
+	// fragment_count of 1 means the unit is unfragmented.
+	uint32 fragment_index = 5;
+	uint32 fragment_count = 6;
+
+	// The coded bytes of this fragment.
+	bytes payload = 7;
+
+	// True if this unit does not depend on any previously received unit, that is, the region it covers
+	// can be decoded and displayed standalone. Every TiledImage unit is a keyframe by construction; for
+	// VP8 and later codecs this is the real keyframe flag. Receivers discard everything until the first
+	// keyframe and after any reassembly failure.
+	bool is_keyframe = 8;
+
+	// True on the last unit of a frame, so that the receiver knows when to present rather than waiting
+	// for a timeout.
+	bool is_frame_end = 9;
+
+	// Capture time of the frame in microseconds on the sender's monotonic clock. Nothing else in the
+	// protocol carries a wall-clock timestamp -- audio only has a 10 ms frame counter -- so this is the
+	// only anchor available for pacing and, eventually, for A/V alignment. It is not comparable across
+	// senders.
+	uint64 capture_timestamp_usec = 10;
+
+	// Field indices 11 to 15 are deliberately left free, for the same reason as in Audio above: they
+	// cost only a single byte of tag overhead and are reserved for fields that later turn out to be
+	// present on every fragment.
+
+	// The fields below are only set on fragment_index == 0 of a unit.
+
+	// Destination rectangle of this unit within the full frame, in pixels. For whole-frame codecs this
+	// is the whole frame.
+	uint32 x = 16;
+	uint32 y = 17;
+	uint32 width = 18;
+	uint32 height = 19;
+}
