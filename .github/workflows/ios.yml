@@ -1,0 +1,56 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # attach the IPA to a release on tags
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      WORK: ${{ github.workspace }}/.deps
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
+      # Third-party libraries change only with tools/versions.sh. mumble-core is rebuilt every time below,
+      # so an older cache never leaves a stale core in the framework.
+      - name: Cache native dependencies
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/versions.sh', 'tools/build-deps.sh') }}
+
+      - name: Build native dependencies
+        run: |
+          rm -rf .deps/*/build/mumble-core
+          tools/build-deps.sh
+
+      - name: Test MumbleKit
+        run: swift test 2>&1 | grep -vE '^ld: warning'
+
+      - name: Build the IPA
+        run: |
+          tools/package-ipa.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MumbleVideo-ipa
+          path: build/MumbleVideo.ipa
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" build/MumbleVideo.ipa --title "$GITHUB_REF_NAME" \
+            --notes "Unsigned iPhone build. Install it with Sideloadly or AltStore: see docs/SIDELOAD.md."

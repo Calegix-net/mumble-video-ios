@@ -6,3 +6,5 @@ DerivedData/
 xcuserdata/
 .DS_Store
 /MumbleVideo.xcodeproj/
+build/
+.deps/

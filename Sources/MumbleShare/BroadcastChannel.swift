@@ -76,12 +76,31 @@ public enum BroadcastMessage: Equatable, Sendable {
 
 public enum BroadcastChannel {
     public static let appGroup = "group.com.calegix.mumblevideo"
+    static let appBundleID = "com.calegix.mumblevideo.ios"
 
     /// The socket path inside the App Group container (or `directory` for tests). Kept short: sun_path is
     /// 104 bytes.
     public static func socketPath(directory: URL? = nil) -> String? {
-        let dir = directory ?? FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+        let dir = directory ?? appGroupCandidates().lazy.compactMap {
+            FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0)
+        }.first
         return dir?.appendingPathComponent("bcast.sock").path
+    }
+
+    /// Where the shared container may be. Sideloading re-signs the app under the user's own team, and the
+    /// tools rename what they register: AltStore records the renamed groups in Info.plist (ALTAppGroups);
+    /// others add the same suffix to the group that they added to the bundle id. Both the app and the
+    /// extension work the list out the same way, so they meet in the same container.
+    static func appGroupCandidates(info: [String: Any]? = Bundle.main.infoDictionary,
+                                   bundleID: String? = Bundle.main.bundleIdentifier) -> [String] {
+        var out = (info?["ALTAppGroups"] as? [String]) ?? []
+        out.append(appGroup)
+        var id = bundleID ?? ""
+        if id.hasSuffix(".broadcast") { id.removeLast(".broadcast".count) }
+        if id.hasPrefix(appBundleID + "."), id.count > appBundleID.count + 1 {
+            out.append(appGroup + id.dropFirst(appBundleID.count))
+        }
+        return out
     }
 }
 

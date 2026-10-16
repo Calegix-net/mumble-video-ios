@@ -5,8 +5,11 @@
 #
 # Runs on macOS with Xcode. Needs cmake and ninja on PATH (pip install --user cmake ninja is enough).
 #
-#   tools/build-deps.sh                 all slices
-#   SLICES="sim-x86_64" tools/build-deps.sh
+#   tools/build-deps.sh                 iPhone + this Mac's simulator and macOS slices
+#   SLICES="ios-arm64" tools/build-deps.sh   (what an iPhone build needs; CI's release build)
+#
+# Slices: ios-arm64, sim-x86_64, sim-arm64, mac-x86_64, mac-arm64. An xcframework holds one library per
+# platform, so pick one simulator and one macOS architecture (the defaults follow the host).
 #
 # Sources and per-slice builds are cached under $WORK; delete a slice's directory to rebuild it.
 set -euo pipefail
@@ -15,7 +18,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=versions.sh
 . "$ROOT/tools/versions.sh"
 WORK="${WORK:-$HOME/.cache/mumble-video-ios/deps}"
-SLICES="${SLICES:-ios-arm64 sim-x86_64 mac-x86_64}"
+HOST_ARCH="$(uname -m)"
+SLICES="${SLICES:-ios-arm64 sim-$HOST_ARCH mac-$HOST_ARCH}"
 JOBS="$(sysctl -n hw.ncpu)"
 CORE_SRC="$ROOT/Vendor/mumble-core/src/mumble-core"
 mkdir -p "$WORK/src" "$WORK/tools"
@@ -42,6 +46,7 @@ host_tools() {
 	[ -x "$WORK/tools/protoc/bin/protoc" ] || { rm -rf "$WORK/tools/protoc" && unzip -q "$WORK/src/protoc.zip" -d "$WORK/tools/protoc"; }
 	PROTOC="$WORK/tools/protoc/bin/protoc"
 	"$PROTOC" --version
+	case "$SLICES" in *x86_64*) ;; *) return ;; esac
 	fetch "$NASM_URL" "" nasm.zip
 	[ -x "$WORK/tools/nasm/nasm" ] || { rm -rf "$WORK/tools/nasm" "$WORK/tools/nasm-$NASM_VERSION" && unzip -q "$WORK/src/nasm.zip" -d "$WORK/tools" && mv "$WORK/tools/nasm-$NASM_VERSION" "$WORK/tools/nasm"; }
 	export PATH="$WORK/tools/nasm:$PATH"
@@ -53,7 +58,9 @@ slice_vars() {
 	case "$1" in
 		ios-arm64)  SDK=iphoneos;        ARCH=arm64;  SYS=iOS;    MINFLAG="-mios-version-min=$IOS_MIN";           OSSL=ios64-xcrun;               VPXT=arm64-darwin-gcc ;;
 		sim-x86_64) SDK=iphonesimulator; ARCH=x86_64; SYS=iOS;    MINFLAG="-mios-simulator-version-min=$IOS_MIN"; OSSL=iossimulator-x86_64-xcrun; VPXT=x86_64-iphonesimulator-gcc ;;
+		sim-arm64)  SDK=iphonesimulator; ARCH=arm64;  SYS=iOS;    MINFLAG="-mios-simulator-version-min=$IOS_MIN"; OSSL=iossimulator-arm64-xcrun;  VPXT=arm64-iphonesimulator-gcc ;;
 		mac-x86_64) SDK=macosx;          ARCH=x86_64; SYS=Darwin; MINFLAG="-mmacosx-version-min=$MACOS_MIN";       OSSL=darwin64-x86_64-cc;        VPXT=x86_64-darwin20-gcc ;;
+		mac-arm64)  SDK=macosx;          ARCH=arm64;  SYS=Darwin; MINFLAG="-mmacosx-version-min=$MACOS_MIN";       OSSL=darwin64-arm64-cc;         VPXT=arm64-darwin20-gcc ;;
 		*) echo "unknown slice $1" >&2; exit 2 ;;
 	esac
 	SYSROOT="$(xcrun --sdk "$SDK" --show-sdk-path)"

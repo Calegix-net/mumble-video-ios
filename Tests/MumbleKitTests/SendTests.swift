@@ -265,3 +265,15 @@ func waitUntil(_ seconds: Double = 5, _ condition: () -> Bool) async throws {
         try await Task.sleep(for: .milliseconds(20))
     }
 }
+
+struct AppGroupTests {
+    @Test func findsTheGroupAfterSideloading() {
+        #expect(BroadcastChannel.appGroupCandidates(info: [:], bundleID: "com.calegix.mumblevideo.ios") == ["group.com.calegix.mumblevideo"])
+        // A tool that suffixed the bundle id (team id), seen from the app and from the extension.
+        let suffixed = ["group.com.calegix.mumblevideo", "group.com.calegix.mumblevideo.ABCDE12345"]
+        #expect(BroadcastChannel.appGroupCandidates(info: [:], bundleID: "com.calegix.mumblevideo.ios.ABCDE12345") == suffixed)
+        #expect(BroadcastChannel.appGroupCandidates(info: [:], bundleID: "com.calegix.mumblevideo.ios.ABCDE12345.broadcast") == suffixed)
+        // AltStore says where it put it.
+        #expect(BroadcastChannel.appGroupCandidates(info: ["ALTAppGroups": ["group.x.Y"]], bundleID: "other").first == "group.x.Y")
+    }
+}

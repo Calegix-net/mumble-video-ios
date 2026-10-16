@@ -10,8 +10,6 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    # MumbleNative.xcframework has no arm64 simulator slice yet (tools/build-deps.sh builds Intel only).
-    EXCLUDED_ARCHS[sdk=iphonesimulator*]: arm64
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
 targets:
