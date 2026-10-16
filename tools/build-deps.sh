@@ -119,7 +119,7 @@ build_vpx() { # slice
 	local flags="$MINFLAG" env=()
 	if [ "$VPXT" = generic-gnu ]; then
 		flags="-arch $ARCH -isysroot $SYSROOT $MINFLAG"
-		env=(CC="$CC" CXX="$CXX" AR="$(xcrun --find ar)" LD="$CC")
+		env=(CC="$CC" CXX="$CXX" AR="$(xcrun --find ar)" LD="$CC" LDFLAGS="$flags")
 	fi
 	(cd "$BUILD/vpx" &&
 		env ${env[@]+"${env[@]}"} "$WORK/src/libvpx/configure" --target="$VPXT" --prefix="$PREFIX" \
