@@ -110,7 +110,7 @@ build_opus() {
 		-DOPUS_INSTALL_PKG_CONFIG_MODULE=OFF -DOPUS_INSTALL_CMAKE_CONFIG_MODULE=OFF
 }
 
-build_vpx() {
+build_vpx() { # slice
 	[ -f "$PREFIX/lib/libvpx.a" ] && return
 	[ -d "$WORK/src/libvpx" ] || git clone -q --depth 1 --branch "$VPX_VERSION" "$VPX_GIT" "$WORK/src/libvpx"
 	rm -rf "$BUILD/vpx" && mkdir -p "$BUILD/vpx"
@@ -126,8 +126,8 @@ build_vpx() {
 			--extra-cflags="$flags" --extra-cxxflags="$flags" \
 			--enable-vp8 --enable-vp9 --enable-static --disable-shared --enable-pic \
 			--disable-examples --disable-tools --disable-docs --disable-unit-tests --disable-install-bins \
-			--enable-realtime-only --disable-webm-io --disable-libyuv >/dev/null &&
-		make -j"$JOBS" >/dev/null && make install >/dev/null)
+			--enable-realtime-only --disable-webm-io --disable-libyuv >>"$BUILD/vpx.log" 2>&1 &&
+		make -j"$JOBS" >>"$BUILD/vpx.log" 2>&1 && make install >>"$BUILD/vpx.log" 2>&1) || { echo "libvpx failed for $1:" >&2; tail -40 "$BUILD/vpx.log" >&2; exit 1; }
 }
 
 build_core() {
@@ -162,7 +162,7 @@ for s in $SLICES; do
 	build_openssl;         echo "   openssl"
 	build_abseil_protobuf; echo "   abseil + protobuf-lite"
 	build_opus;            echo "   opus"
-	build_vpx;             echo "   libvpx"
+	build_vpx "$s";        echo "   libvpx"
 	build_core;            echo "   mumble-core"
 	merge_slice "$s"
 	args+=(-library "$WORK/$s/merged/libMumbleNative.a" -headers "$WORK/$s/merged/include")
