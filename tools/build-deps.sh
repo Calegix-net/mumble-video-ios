@@ -58,7 +58,7 @@ slice_vars() {
 	case "$1" in
 		ios-arm64)  SDK=iphoneos;        ARCH=arm64;  SYS=iOS;    MINFLAG="-mios-version-min=$IOS_MIN";           OSSL=ios64-xcrun;               VPXT=arm64-darwin-gcc ;;
 		sim-x86_64) SDK=iphonesimulator; ARCH=x86_64; SYS=iOS;    MINFLAG="-mios-simulator-version-min=$IOS_MIN"; OSSL=iossimulator-x86_64-xcrun; VPXT=x86_64-iphonesimulator-gcc ;;
-		sim-arm64)  SDK=iphonesimulator; ARCH=arm64;  SYS=iOS;    MINFLAG="-mios-simulator-version-min=$IOS_MIN"; OSSL=iossimulator-arm64-xcrun;  VPXT=arm64-iphonesimulator-gcc ;;
+		sim-arm64)  SDK=iphonesimulator; ARCH=arm64;  SYS=iOS;    MINFLAG="-mios-simulator-version-min=$IOS_MIN"; OSSL=iossimulator-arm64-xcrun;  VPXT=generic-gnu ;;
 		mac-x86_64) SDK=macosx;          ARCH=x86_64; SYS=Darwin; MINFLAG="-mmacosx-version-min=$MACOS_MIN";       OSSL=darwin64-x86_64-cc;        VPXT=x86_64-darwin20-gcc ;;
 		mac-arm64)  SDK=macosx;          ARCH=arm64;  SYS=Darwin; MINFLAG="-mmacosx-version-min=$MACOS_MIN";       OSSL=darwin64-arm64-cc;         VPXT=arm64-darwin20-gcc ;;
 		*) echo "unknown slice $1" >&2; exit 2 ;;
@@ -114,9 +114,16 @@ build_vpx() {
 	[ -f "$PREFIX/lib/libvpx.a" ] && return
 	[ -d "$WORK/src/libvpx" ] || git clone -q --depth 1 --branch "$VPX_VERSION" "$VPX_GIT" "$WORK/src/libvpx"
 	rm -rf "$BUILD/vpx" && mkdir -p "$BUILD/vpx"
+	# libvpx has no arm64 simulator target: that slice uses its portable C build (generic-gnu) with the
+	# simulator SDK's compiler and flags, so no hand-written SIMD there. Fine for a simulator.
+	local flags="$MINFLAG" env=()
+	if [ "$VPXT" = generic-gnu ]; then
+		flags="-arch $ARCH -isysroot $SYSROOT $MINFLAG"
+		env=(CC="$CC" CXX="$CXX" AR="$(xcrun --find ar)" LD="$CC")
+	fi
 	(cd "$BUILD/vpx" &&
-		"$WORK/src/libvpx/configure" --target="$VPXT" --prefix="$PREFIX" \
-			--extra-cflags="$MINFLAG" --extra-cxxflags="$MINFLAG" \
+		env ${env[@]+"${env[@]}"} "$WORK/src/libvpx/configure" --target="$VPXT" --prefix="$PREFIX" \
+			--extra-cflags="$flags" --extra-cxxflags="$flags" \
 			--enable-vp8 --enable-vp9 --enable-static --disable-shared --enable-pic \
 			--disable-examples --disable-tools --disable-docs --disable-unit-tests --disable-install-bins \
 			--enable-realtime-only --disable-webm-io --disable-libyuv >/dev/null &&
