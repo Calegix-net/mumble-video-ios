@@ -36,7 +36,8 @@ jobs:
           tools/build-deps.sh
 
       - name: Test MumbleKit
-        run: swift test 2>&1 | grep -vE '^ld: warning'
+        run: |
+          swift test 2>&1 | grep -vE '^ld: warning'
 
       - name: Build the IPA
         run: |
