@@ -83,7 +83,7 @@ struct ChatImageTests {
         let big = String(repeating: "A", count: ChatLimits.maxBase64Characters + 1)
         let parts = ChatHTML.parse("<img src=\"data:image/png;base64,\(big)\">")
         #expect(parts == [.refusedImage("Picture too large")])
-        // Just over 1 MiB of real bytes: its base64 fits the character cap, the decoded size does not.
+        // Just over 768 KiB of real bytes: its base64 fits the character cap, the decoded size does not.
         let justOver = Data(repeating: 0, count: ChatLimits.maxImageBytes + 1)
         #expect(ChatHTML.parse(imgTag(justOver)) == [.refusedImage("Picture too large")])
     }

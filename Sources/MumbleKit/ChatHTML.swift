@@ -7,10 +7,12 @@ import ImageIO
 /// tiny PNG that claims to be 100000 x 100000 pixels must never become a 40 GB bitmap.
 /// The desktop and Android clients use the same numbers.
 public enum ChatLimits {
-    /// Largest picture file taken from a data: URI, after base64 decoding.
-    public static let maxImageBytes = 1 << 20
-    /// Longest base64 text accepted for one picture (a few line breaks allowed on top).
-    public static let maxBase64Characters = (maxImageBytes + 2) / 3 * 4 + 1024
+    /// Largest picture file taken from a data: URI, after base64 decoding: what 1 MiB of base64 holds,
+    /// the same cap as desktop and Android (and the most any of our clients sends).
+    public static let maxImageBytes = (1 << 20) / 4 * 3
+    /// Longest base64 text accepted for one picture before decoding: 1 MiB plus room for the line breaks
+    /// and percent-encoding senders wrap it in. The decoded size above is the real limit.
+    public static let maxBase64Characters = (1 << 20) + (64 << 10)
     /// Largest picture by the size in its header. Bigger ones are refused, not scaled: a progressive
     /// JPEG decoder keeps about 3 bytes per source pixel however small the thumbnail, so 40 MP is ~120 MB.
     public static let maxImagePixels = 40_000_000
