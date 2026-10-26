@@ -1,0 +1,143 @@
+import CoreGraphics
+import Foundation
+import ImageIO
+@testable import MumbleKit
+import Testing
+import UniformTypeIdentifiers
+
+/// A PNG whose header says `width` x `height`. The pixel data is a stub: it is tiny however big the
+/// header claims to be, which is exactly what an attacker sends.
+func craftedPNG(width: UInt32, height: UInt32) -> Data {
+    func crc32(_ bytes: [UInt8]) -> UInt32 {
+        var c: UInt32 = 0xFFFF_FFFF
+        for b in bytes {
+            c ^= UInt32(b)
+            for _ in 0 ..< 8 { c = (c & 1) != 0 ? 0xEDB8_8320 ^ (c >> 1) : c >> 1 }
+        }
+        return ~c
+    }
+    func be(_ v: UInt32) -> [UInt8] { [UInt8(v >> 24), UInt8((v >> 16) & 0xFF), UInt8((v >> 8) & 0xFF), UInt8(v & 0xFF)] }
+    func chunk(_ type: String, _ body: [UInt8]) -> [UInt8] {
+        let t = Array(type.utf8)
+        return be(UInt32(body.count)) + t + body + be(crc32(t + body))
+    }
+    var png: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+    png += chunk("IHDR", be(width) + be(height) + [8, 2, 0, 0, 0])
+    png += chunk("IDAT", [0x78, 0x9C, 0x63, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01])
+    png += chunk("IEND", [])
+    return Data(png)
+}
+
+/// A real, flat-coloured picture of the given size, encoded as `type`.
+func realPicture(width: Int, height: Int, type: UTType = .jpeg) -> Data {
+    let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+    ctx.setFillColor(red: 0.2, green: 0.6, blue: 0.9, alpha: 1)
+    ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    let out = NSMutableData()
+    let dest = CGImageDestinationCreateWithData(out, type.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
+    #expect(CGImageDestinationFinalize(dest))
+    return out as Data
+}
+
+func imgTag(_ data: Data, mime: String = "image/png", extra: String = "") -> String {
+    "<img src=\"data:\(mime);base64,\(data.base64EncodedString())\"\(extra) />"
+}
+
+struct ChatImageTests {
+    @Test func readsHeaderSizeWithoutDecoding() throws {
+        let size = try #require(ChatImageDecoder.pixelSize(of: craftedPNG(width: 100_000, height: 100_000)))
+        #expect(size == (100_000, 100_000))
+    }
+
+    @Test func pixelBudget() {
+        #expect(ChatImageDecoder.isAllowed(width: 4032, height: 3024)) // a phone photo
+        #expect(ChatImageDecoder.isAllowed(width: 10000, height: 10000))
+        #expect(!ChatImageDecoder.isAllowed(width: 10001, height: 10000))
+        #expect(!ChatImageDecoder.isAllowed(width: 20001, height: 10))
+        #expect(!ChatImageDecoder.isAllowed(width: 0, height: 10))
+        #expect(!ChatImageDecoder.isAllowed(width: Int.max, height: Int.max))
+    }
+
+    @Test(arguments: [(100_000 as UInt32, 100_000 as UInt32), (65535, 65535), (30000, 1), (15000, 15000), (0x7FFF_FFFF, 0x7FFF_FFFF)])
+    func refusesHugeDeclaredSize(width: UInt32, height: UInt32) {
+        let parts = ChatHTML.parse("look " + imgTag(craftedPNG(width: width, height: height)))
+        #expect(parts.count == 2)
+        // ImageIO itself rejects some of these headers ("Broken picture"); either way nothing is decoded.
+        guard case .refusedImage = parts.last else { Issue.record("not refused: \(parts)"); return }
+        #expect(ChatImageDecoder.decode(craftedPNG(width: width, height: height)) == nil)
+    }
+
+    @Test func refusesOversizedBase64BeforeDecoding() {
+        let big = String(repeating: "A", count: ChatLimits.maxBase64Characters + 1)
+        let parts = ChatHTML.parse("<img src=\"data:image/png;base64,\(big)\">")
+        #expect(parts == [.refusedImage("Picture too large")])
+        // Just over 1 MiB of real bytes: its base64 fits the character cap, the decoded size does not.
+        let justOver = Data(repeating: 0, count: ChatLimits.maxImageBytes + 1)
+        #expect(ChatHTML.parse(imgTag(justOver)) == [.refusedImage("Picture too large")])
+    }
+
+    @Test func refusesGarbageAndRemote() {
+        #expect(ChatHTML.parse("<img src=\"data:image/png;base64,bm90IGFuIGltYWdl\">") == [.refusedImage("Broken picture")])
+        #expect(ChatHTML.parse("<img src=\"https://example.com/a.png\">") == [.refusedImage("Picture from the web (not loaded)")])
+        #expect(ChatHTML.parse("<img src=\"data:text/html;base64,PGI+\">") == [.refusedImage("Unsupported picture")])
+    }
+
+    @Test func showsANormalPhotoScaledDown() throws {
+        let photo = realPicture(width: 4032, height: 3024)
+        #expect(photo.count < ChatLimits.maxImageBytes)
+        let parts = ChatHTML.parse("<p>holiday</p>" + imgTag(photo, mime: "image/jpeg"))
+        #expect(parts.first == .text("holiday"))
+        guard case let .image(image) = parts.last else { Issue.record("no picture: \(parts)"); return }
+        #expect(image.pixelWidth == 4032 && image.pixelHeight == 3024)
+        let decoded = try #require(ChatImageDecoder.decode(image.data))
+        #expect(max(decoded.width, decoded.height) == ChatLimits.maxDecodedSide)
+        #expect(decoded.width == 2048 && decoded.height == 1536)
+    }
+
+    @Test func smallPictureKeepsItsSize() throws {
+        let parts = ChatHTML.parse(imgTag(realPicture(width: 320, height: 200, type: .png)))
+        guard case let .image(image) = parts.first else { Issue.record("no picture: \(parts)"); return }
+        let decoded = try #require(ChatImageDecoder.decode(image.data))
+        #expect(decoded.width == 320 && decoded.height == 200)
+    }
+
+    @Test func clampsDeclaredWidthAndHeight() {
+        let tag = imgTag(realPicture(width: 16, height: 16, type: .png), extra: " width=\"99999999999\" height='50000px'")
+        guard case let .image(image) = ChatHTML.parse(tag).first else { Issue.record("no picture"); return }
+        #expect(image.displayWidth == ChatLimits.maxDisplaySide)
+        #expect(image.displayHeight == ChatLimits.maxDisplaySide)
+    }
+
+    @Test func capsPicturesAndTextPerMessage() {
+        let tiny = imgTag(realPicture(width: 4, height: 4, type: .png))
+        let parts = ChatHTML.parse(String(repeating: tiny, count: ChatLimits.maxImagesPerMessage + 3))
+        #expect(parts.filter { if case .image = $0 { true } else { false } }.count == ChatLimits.maxImagesPerMessage)
+        #expect(parts.count == ChatLimits.maxImagesPerMessage + 3)
+
+        let long = ChatMessage(sender: nil, senderName: "x", body: String(repeating: "a", count: 8 << 20))
+        #expect(long.body.count == ChatLimits.maxTextCharacters)
+        guard case let .text(t) = long.parts.first else { Issue.record("no text"); return }
+        #expect(t.count <= ChatLimits.maxTextCharacters + 3)
+    }
+
+    /// The "flood the phone" report: the server can relay message after message of up to 8 MB each.
+    @Test func historyStaysWithinBudget() {
+        var history: [ChatMessage] = []
+        let bulky = String(repeating: "b", count: 1 << 20)
+        for _ in 0 ..< 600 { history.appendBounded(ChatMessage(sender: nil, senderName: "flood", body: bulky)) }
+        #expect(history.count <= ChatLimits.maxHistoryMessages)
+        #expect(history.reduce(0) { $0 + $1.cost } <= ChatLimits.maxHistoryBytes)
+
+        var normal: [ChatMessage] = []
+        for i in 0 ..< 600 { normal.appendBounded(ChatMessage(sender: nil, senderName: "a", body: "hi \(i)")) }
+        #expect(normal.count == ChatLimits.maxHistoryMessages)
+        #expect(normal.last?.body == "hi 599")
+    }
+
+    @Test func plainTextIsUnchanged() {
+        #expect(ChatHTML.parse("hello <b>there</b><br />&amp; bye") == [.text("hello there\n& bye")])
+        #expect(ChatHTML.parse("") == [])
+    }
+}

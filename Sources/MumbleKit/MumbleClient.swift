@@ -128,7 +128,7 @@ public final class MumbleClient: @unchecked Sendable {
             if case let .channel(c) = target { own.channels = [c] }
             if case let .tree(c) = target { own.trees = [c] }
             if case let .user(u) = target { own.users = [u] }
-            publish { $0.messages.append(own) }
+            publish { $0.messages.appendBounded(own) }
         }
     }
 
@@ -357,7 +357,7 @@ public final class MumbleClient: @unchecked Sendable {
                 publishServer()
             case MumbleCoreType.textMessage:
                 let message = ServerReducer.message(try MumbleProto_TextMessage(serializedBytes: payload), in: server)
-                publish { $0.messages.append(message) }
+                publish { $0.messages.appendBounded(message) }
             case MumbleCoreType.cryptSetup:
                 let (_, events) = session.cryptSetup(payload)
                 handle(events)
@@ -387,7 +387,7 @@ public final class MumbleClient: @unchecked Sendable {
             case MumbleCoreType.permissionDenied:
                 let m = try MumbleProto_PermissionDenied(serializedBytes: payload)
                 let text = m.reason.isEmpty ? "Permission denied" : m.reason
-                publish { $0.messages.append(ChatMessage(sender: nil, senderName: "Server", body: text)) }
+                publish { $0.messages.appendBounded(ChatMessage(sender: nil, senderName: "Server", body: text)) }
             default:
                 break // not used by this client yet
             }
