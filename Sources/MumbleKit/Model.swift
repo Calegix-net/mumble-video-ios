@@ -99,12 +99,54 @@ public struct ChatMessage: Identifiable, Sendable, Equatable {
     public var channels: [ChannelID] = []
     public var trees: [ChannelID] = []
     public var users: [UserSession] = []
-    /// May contain HTML when the server allows it.
+    /// May contain HTML when the server allows it. Pictures are taken out (see `parts`) and the rest is
+    /// cut to `ChatLimits.maxTextCharacters`, so one message can't hold megabytes.
     public var body: String
+    /// The message as text and checked pictures, parsed once when it arrives.
+    public var parts: [ChatPart]
     public var date = Date()
     public var isOwn = false
 
+    public init(sender: UserSession?, senderName: String, channels: [ChannelID] = [], trees: [ChannelID] = [],
+                users: [UserSession] = [], body: String, isOwn: Bool = false) {
+        self.sender = sender
+        self.senderName = senderName
+        self.channels = channels
+        self.trees = trees
+        self.users = users
+        parts = ChatHTML.parse(body)
+        let html = body.replacingOccurrences(of: "<img\\b[^>]*>", with: "", options: [.regularExpression, .caseInsensitive])
+        self.body = html.count > ChatLimits.maxTextCharacters ? String(html.prefix(ChatLimits.maxTextCharacters)) : html
+        self.isOwn = isOwn
+    }
+
     public var isPrivate: Bool { channels.isEmpty && trees.isEmpty && !users.isEmpty }
+
+    /// Roughly the memory this message holds.
+    public var cost: Int {
+        parts.reduce(body.utf8.count + senderName.utf8.count + 128) { total, part in
+            switch part {
+            case let .text(t): total + t.utf8.count
+            case let .image(i): total + i.data.count
+            case let .refusedImage(r): total + r.utf8.count
+            }
+        }
+    }
+}
+
+extension [ChatMessage] {
+    /// Appends a message and drops the oldest ones past `ChatLimits.maxHistoryMessages` or
+    /// `ChatLimits.maxHistoryBytes`, so a flood of messages can't use up the phone's memory.
+    public mutating func appendBounded(_ message: ChatMessage) {
+        append(message)
+        var total = reduce(0) { $0 + $1.cost }
+        var drop = 0
+        while count - drop > 1, count - drop > ChatLimits.maxHistoryMessages || total > ChatLimits.maxHistoryBytes {
+            total -= self[drop].cost
+            drop += 1
+        }
+        if drop > 0 { removeFirst(drop) }
+    }
 }
 
 public enum MessageTarget: Sendable {

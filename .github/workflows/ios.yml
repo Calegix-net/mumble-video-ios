@@ -37,6 +37,7 @@ jobs:
 
       - name: Test MumbleKit
         run: |
+          set -o pipefail
           swift test 2>&1 | grep -vE '^ld: warning'
 
       - name: Build the IPA

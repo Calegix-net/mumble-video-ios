@@ -133,7 +133,7 @@ struct ChatView: View {
                 List(state.messages.filter { $0.isPrivate || here == nil || $0.channels.contains(here!) || $0.trees.contains(here!) || $0.channels.isEmpty }) { m in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(m.senderName + (m.isPrivate ? " (private)" : "")).font(.caption).foregroundStyle(.secondary)
-                        Text(plain(m.body))
+                        ChatBody(parts: m.parts)
                     }
                     .id(m.id)
                 }
@@ -155,14 +155,55 @@ struct ChatView: View {
         model.client.sendMessage(draft, to: .channel(here))
         draft = ""
     }
+}
 
-    /// Mumble chat is HTML; show it as text.
-    private func plain(_ html: String) -> String {
-        html.replacingOccurrences(of: "<br />", with: "\n").replacingOccurrences(of: "<br>", with: "\n")
-            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">").replacingOccurrences(of: "&quot;", with: "\"")
+/// A message's text and pictures. Pictures were checked when the message arrived and are decoded here,
+/// off the main thread and scaled down (ChatImageDecoder), only while the row is on screen.
+struct ChatBody: View {
+    let parts: [ChatPart]
+
+    var body: some View {
+        ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+            switch part {
+            case let .text(text): Text(text)
+            case let .image(image): ChatPicture(image: image)
+            case let .refusedImage(reason): Label(reason, systemImage: "photo").font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
+}
+
+struct ChatPicture: View {
+    let image: ChatImage
+    @State private var decoded: CGImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let decoded {
+                Image(decorative: decoded, scale: 1).resizable().aspectRatio(contentMode: .fit)
+            } else if failed {
+                Label("Broken picture", systemImage: "photo").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+            }
+        }
+        .frame(maxWidth: maxWidth, maxHeight: 400, alignment: .leading)
+        .task {
+            let data = image.data
+            let result = await Task.detached(priority: .utility) { ChatImageDecoder.decode(data).map(DecodedImage.init) }.value
+            decoded = result?.image
+            failed = result == nil
+        }
+    }
+
+    private var maxWidth: CGFloat {
+        CGFloat(image.displayWidth ?? min(image.pixelWidth, ChatLimits.maxDisplaySide))
+    }
+}
+
+private struct DecodedImage: @unchecked Sendable {
+    let image: CGImage
 }
 
 struct VideoListView: View {
