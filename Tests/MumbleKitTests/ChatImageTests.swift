@@ -5,10 +5,10 @@ import ImageIO
 import Testing
 import UniformTypeIdentifiers
 
-/// A PNG whose header says `width` x `height`. The pixel data is a stub: it is tiny however big the
-/// header claims to be, which is exactly what an attacker sends.
+/// A real 2 x 2 PNG with its header rewritten to say `width` x `height`. The file stays tiny however
+/// big the header claims to be, which is exactly what an attacker sends.
 func craftedPNG(width: UInt32, height: UInt32) -> Data {
-    func crc32(_ bytes: [UInt8]) -> UInt32 {
+    func crc32(_ bytes: ArraySlice<UInt8>) -> UInt32 {
         var c: UInt32 = 0xFFFF_FFFF
         for b in bytes {
             c ^= UInt32(b)
@@ -16,15 +16,15 @@ func craftedPNG(width: UInt32, height: UInt32) -> Data {
         }
         return ~c
     }
-    func be(_ v: UInt32) -> [UInt8] { [UInt8(v >> 24), UInt8((v >> 16) & 0xFF), UInt8((v >> 8) & 0xFF), UInt8(v & 0xFF)] }
-    func chunk(_ type: String, _ body: [UInt8]) -> [UInt8] {
-        let t = Array(type.utf8)
-        return be(UInt32(body.count)) + t + body + be(crc32(t + body))
+    func put(_ v: UInt32, _ png: inout [UInt8], at i: Int) {
+        png[i] = UInt8(v >> 24); png[i + 1] = UInt8((v >> 16) & 0xFF); png[i + 2] = UInt8((v >> 8) & 0xFF); png[i + 3] = UInt8(v & 0xFF)
     }
-    var png: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-    png += chunk("IHDR", be(width) + be(height) + [8, 2, 0, 0, 0])
-    png += chunk("IDAT", [0x78, 0x9C, 0x63, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01])
-    png += chunk("IEND", [])
+    var png = [UInt8](realPicture(width: 2, height: 2, type: .png))
+    // Signature (8), IHDR length (4), "IHDR" (4), width (4), height (4), 5 more bytes, CRC (4).
+    precondition(Array(png[12 ..< 16]) == Array("IHDR".utf8))
+    put(width, &png, at: 16)
+    put(height, &png, at: 20)
+    put(crc32(png[12 ..< 29]), &png, at: 29)
     return Data(png)
 }
 
