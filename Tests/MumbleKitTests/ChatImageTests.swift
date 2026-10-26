@@ -46,9 +46,13 @@ func imgTag(_ data: Data, mime: String = "image/png", extra: String = "") -> Str
 }
 
 struct ChatImageTests {
+    /// ImageIO itself rejects some absurd headers (100000 x 100000 reads as nil); one it does read must
+    /// still be refused by our own budget, with nothing decoded.
     @Test func readsHeaderSizeWithoutDecoding() throws {
-        let size = try #require(ChatImageDecoder.pixelSize(of: craftedPNG(width: 100_000, height: 100_000)))
-        #expect(size == (100_000, 100_000))
+        let png = craftedPNG(width: 12000, height: 12000)
+        let size = try #require(ChatImageDecoder.pixelSize(of: png))
+        #expect(size == (12000, 12000))
+        #expect(ChatHTML.parse(imgTag(png)) == [.refusedImage("Picture too large (12000 x 12000)")])
     }
 
     @Test func pixelBudget() {
@@ -126,7 +130,7 @@ struct ChatImageTests {
     /// The "flood the phone" report: the server can relay message after message of up to 8 MB each.
     @Test func historyStaysWithinBudget() {
         var history: [ChatMessage] = []
-        let bulky = String(repeating: "b", count: 1 << 20)
+        let bulky = String(repeating: "b", count: 64 << 10)
         for _ in 0 ..< 600 { history.appendBounded(ChatMessage(sender: nil, senderName: "flood", body: bulky)) }
         #expect(history.count <= ChatLimits.maxHistoryMessages)
         #expect(history.reduce(0) { $0 + $1.cost } <= ChatLimits.maxHistoryBytes)
