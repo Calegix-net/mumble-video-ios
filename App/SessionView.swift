@@ -53,12 +53,16 @@ struct VoiceBar: View {
 
 struct ChannelsView: View {
     @Environment(AppModel.self) private var model
+    /// The channel a tap picked; it shows a Join button. Tapping never joins (see ChannelJoinPolicy).
+    @State private var selected: ChannelID?
+    @State private var tapGuard = TapGuardBox()
 
     var body: some View {
         List {
-            ChannelRows(id: .root, depth: 0)
+            ChannelRows(id: .root, depth: 0, selected: $selected, tapGuard: tapGuard)
         }
         .listStyle(.plain)
+        .modifier(ScrollPhaseTracker(tapGuard: tapGuard))
         .navigationTitle(model.state.server.channels[.root]?.name ?? "Server")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -71,27 +75,93 @@ struct ChannelsView: View {
     }
 }
 
+/// The list's ScrollTapGuard, held by reference: a tap is judged against the scroll state at that moment,
+/// and scrolling does not re-render the list.
+@MainActor final class TapGuardBox {
+    var value = ScrollTapGuard()
+    func acceptsTap() -> Bool { value.acceptsTap(now: ProcessInfo.processInfo.systemUptime) }
+}
+
+/// Tells the tap guard when the list moves. iOS 17 has no scroll phase to watch; there UIKit's own rule
+/// (the touch that stops a flick is not delivered as a tap) is what stands between a flick and a selection.
+private struct ScrollPhaseTracker: ViewModifier {
+    let tapGuard: TapGuardBox
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollPhaseChange { _, phase in
+                tapGuard.value.scrollChanged(isScrolling: phase != .idle, now: ProcessInfo.processInfo.systemUptime)
+            }
+        } else {
+            content
+        }
+    }
+}
+
 /// One channel, its users, then its sub-channels, indented.
 struct ChannelRows: View {
     @Environment(AppModel.self) private var model
     let id: ChannelID
     let depth: Int
+    @Binding var selected: ChannelID?
+    let tapGuard: TapGuardBox
 
     var body: some View {
         let server = model.state.server
         if let channel = server.channels[id] {
-            Button { model.client.joinChannel(id) } label: {
+            let here = server.selfUser?.channel == id
+            let isSelected = selected == id
+            HStack {
                 Label(channel.name.isEmpty ? "Root" : channel.name, systemImage: "number")
-                    .fontWeight(server.selfUser?.channel == id ? .bold : .regular)
+                    .fontWeight(here ? .bold : .regular)
+                Spacer()
+                if isSelected {
+                    if here {
+                        Text("You're here").font(.subheadline).foregroundStyle(.secondary)
+                    } else {
+                        Button("Join") { handle(.joinButton) }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                    }
+                }
             }
+            .contentShape(Rectangle())
             .padding(.leading, CGFloat(depth) * 16)
+            .onTapGesture { handle(.tap) }
+            .onLongPressGesture(minimumDuration: 0.5) { handle(.longPress) }
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                if !here {
+                    Button("Join") { handle(.swipe) }.tint(.accentColor)
+                }
+            }
+            .listRowBackground(isSelected ? Color.accentColor.opacity(0.15) : nil)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityHint(here ? "You are in this channel" : "Double-tap to select, then Join")
+            .accessibilityActions {
+                if !here { Button("Join") { handle(.swipe) } }
+            }
             ForEach(server.users(in: id)) { user in
                 UserRow(user: user, isSelf: user.id == server.selfSession)
                     .padding(.leading, CGFloat(depth + 1) * 16)
             }
             ForEach(server.children(of: id)) { child in
-                ChannelRows(id: child.id, depth: depth + 1)
+                ChannelRows(id: child.id, depth: depth + 1, selected: $selected, tapGuard: tapGuard)
             }
+        }
+    }
+
+    private func handle(_ gesture: ChannelGesture) {
+        let result = ChannelJoinPolicy.resolve(gesture, on: id, selfChannel: model.state.server.selfUser?.channel,
+                                               tapAccepted: tapGuard.acceptsTap())
+        switch result {
+        case .ignore:
+            break
+        case .select:
+            selected = selected == id ? nil : id
+        case .join:
+            selected = nil
+            model.client.joinChannel(id)
         }
     }
 }
