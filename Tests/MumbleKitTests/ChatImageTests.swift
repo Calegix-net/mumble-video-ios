@@ -46,13 +46,18 @@ func imgTag(_ data: Data, mime: String = "image/png", extra: String = "") -> Str
 }
 
 struct ChatImageTests {
-    /// ImageIO itself rejects some absurd headers (100000 x 100000 reads as nil); one it does read must
-    /// still be refused by our own budget, with nothing decoded.
-    @Test func readsHeaderSizeWithoutDecoding() throws {
-        let png = craftedPNG(width: 12000, height: 12000)
-        let size = try #require(ChatImageDecoder.pixelSize(of: png))
-        #expect(size == (12000, 12000))
-        #expect(ChatHTML.parse(imgTag(png)) == [.refusedImage("Picture too large (12000 x 12000)")])
+    /// ImageIO already refuses a small file whose header claims a huge size (the crafted cases below
+    /// read as nil). The other attack is a real, all-white picture: tiny when compressed, huge when
+    /// decoded. Its header is read and our own budget refuses it before any decode.
+    @Test func refusesRealPictureOverTheBudget() throws {
+        for (w, h) in [(8001, 5000), (20001, 8)] {
+            let png = realPicture(width: w, height: h, type: .png)
+            #expect(png.count < ChatLimits.maxImageBytes)
+            let size = try #require(ChatImageDecoder.pixelSize(of: png))
+            #expect(size == (w, h))
+            #expect(ChatHTML.parse(imgTag(png)) == [.refusedImage("Picture too large (\(w) x \(h))")])
+            #expect(ChatImageDecoder.decode(png) == nil)
+        }
     }
 
     @Test func pixelBudget() {
