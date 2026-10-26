@@ -11,8 +11,9 @@ public enum ChatLimits {
     public static let maxImageBytes = 1 << 20
     /// Longest base64 text accepted for one picture (a few line breaks allowed on top).
     public static let maxBase64Characters = (maxImageBytes + 2) / 3 * 4 + 1024
-    /// Largest picture by the size in its header. Bigger ones are refused, not scaled.
-    public static let maxImagePixels = 100_000_000
+    /// Largest picture by the size in its header. Bigger ones are refused, not scaled: a progressive
+    /// JPEG decoder keeps about 3 bytes per source pixel however small the thumbnail, so 40 MP is ~120 MB.
+    public static let maxImagePixels = 40_000_000
     public static let maxImageSide = 20_000
     /// Pictures are decoded scaled down so their long side is at most this many pixels.
     public static let maxDecodedSide = 2048

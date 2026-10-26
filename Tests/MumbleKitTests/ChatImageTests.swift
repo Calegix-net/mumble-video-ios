@@ -53,14 +53,15 @@ struct ChatImageTests {
 
     @Test func pixelBudget() {
         #expect(ChatImageDecoder.isAllowed(width: 4032, height: 3024)) // a phone photo
-        #expect(ChatImageDecoder.isAllowed(width: 10000, height: 10000))
-        #expect(!ChatImageDecoder.isAllowed(width: 10001, height: 10000))
+        #expect(ChatImageDecoder.isAllowed(width: 8000, height: 5000))
+        #expect(!ChatImageDecoder.isAllowed(width: 8001, height: 5000))
+        #expect(!ChatImageDecoder.isAllowed(width: 10000, height: 10000))
         #expect(!ChatImageDecoder.isAllowed(width: 20001, height: 10))
         #expect(!ChatImageDecoder.isAllowed(width: 0, height: 10))
         #expect(!ChatImageDecoder.isAllowed(width: Int.max, height: Int.max))
     }
 
-    @Test(arguments: [(100_000 as UInt32, 100_000 as UInt32), (65535, 65535), (30000, 1), (15000, 15000), (0x7FFF_FFFF, 0x7FFF_FFFF)])
+    @Test(arguments: [(100_000 as UInt32, 100_000 as UInt32), (65535, 65535), (30000, 1), (15000, 15000), (8000, 5001), (0x7FFF_FFFF, 0x7FFF_FFFF)])
     func refusesHugeDeclaredSize(width: UInt32, height: UInt32) {
         let parts = ChatHTML.parse("look " + imgTag(craftedPNG(width: width, height: height)))
         #expect(parts.count == 2)
