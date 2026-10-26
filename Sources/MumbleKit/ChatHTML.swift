@@ -127,7 +127,7 @@ public enum ChatHTML {
     }
 
     // `[^>]*` keeps the scan linear; Mumble's own HTML never puts '>' inside an img attribute.
-    private nonisolated(unsafe) static let imgTag = try! NSRegularExpression(pattern: "<img\\b[^>]*>", options: [.caseInsensitive])
+    private static let imgTag = try! NSRegularExpression(pattern: "<img\\b[^>]*>", options: [.caseInsensitive])
 
     static func attribute(_ name: String, in tag: String) -> String? {
         let pattern = "\\b\(name)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))"
@@ -149,7 +149,7 @@ public enum ChatHTML {
 }
 
 public enum ChatImageDecoder {
-    private static let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+    private static var sourceOptions: CFDictionary { [kCGImageSourceShouldCache: false] as CFDictionary }
 
     /// Width and height from the file header, without decoding any pixels. nil when ImageIO can't read it.
     public static func pixelSize(of data: Data) -> (Int, Int)? {
