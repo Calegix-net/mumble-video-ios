@@ -64,6 +64,10 @@ struct ChannelsView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Toggle("Push to talk", isOn: Binding(get: { model.pushToTalk }, set: { model.pushToTalk = $0 }))
+                    Picker("Keep screen on", selection: Binding(get: { model.keepScreenAwake }, set: { model.keepScreenAwake = $0 })) {
+                        ForEach(KeepScreenAwake.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.menu)
                     Button("Disconnect", role: .destructive) { model.disconnect() }
                 } label: { Image(systemName: "ellipsis.circle") }
             }

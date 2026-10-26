@@ -4,6 +4,7 @@ import SwiftUI
 struct ServerListView: View {
     @Environment(AppModel.self) private var model
     @State private var editing: SavedServer?
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack {
@@ -34,8 +35,15 @@ struct ServerListView: View {
             }
             .navigationTitle("Mumble Video")
             .toolbar {
-                Button { editing = SavedServer(label: "", host: "", username: "") } label: { Image(systemName: "plus") }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showingSettings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Settings")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { editing = SavedServer(label: "", host: "", username: "") } label: { Image(systemName: "plus") }
+                }
             }
+            .sheet(isPresented: $showingSettings) { SettingsView() }
             .sheet(item: $editing) { server in
                 ServerEditor(server: server) { model.save($0) }
             }
@@ -52,6 +60,30 @@ struct ServerListView: View {
         case let .disconnected(reason): reason
         case let .rejected(reason): "Rejected: \(reason)"
         default: nil
+        }
+    }
+}
+
+struct SettingsView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        @Bindable var model = model
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Keep screen on", selection: $model.keepScreenAwake) {
+                        ForEach(KeepScreenAwake.allCases) { Text($0.label).tag($0) }
+                    }
+                } footer: {
+                    Text("Streaming means sending a camera or screen, or watching someone's video.")
+                }
+            }
+            .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
         }
     }
 }
