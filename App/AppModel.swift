@@ -33,6 +33,15 @@ final class AppModel {
     var muted = false
     var deafened = false
     var audioError: String?
+    var keepScreenAwake = KeepScreenAwake(stored: UserDefaults.standard.string(forKey: "keepScreenAwake")) {
+        didSet { UserDefaults.standard.set(keepScreenAwake.rawValue, forKey: "keepScreenAwake") }
+    }
+
+    /// Whether the idle timer should be off right now, for RootView to apply.
+    var keepsScreenOn: Bool {
+        keepScreenAwake.keepsScreenOn(connected: state.connection.isConnected, sendingVideo: sendingCamera || sharingScreen,
+                                      watchingVideo: !watching.isEmpty)
+    }
 
     /// Our camera stream, and a small picture of it for the user.
     private(set) var sendingCamera = false

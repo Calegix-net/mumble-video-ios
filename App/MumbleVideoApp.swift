@@ -26,6 +26,8 @@ struct RootView: View {
                 ServerListView()
             }
         }
+        // The system only honours this while the app is in front, and resets it when the app goes away.
+        .onChange(of: model.keepsScreenOn, initial: true) { _, on in UIApplication.shared.isIdleTimerDisabled = on }
         .alert("Trust this server?", isPresented: trustPrompt, presenting: pendingCert) { cert in
             Button("Trust and connect") { model.trust(cert) }
             Button("Cancel", role: .cancel) { model.disconnect() }
